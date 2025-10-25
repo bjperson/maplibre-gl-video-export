@@ -1,0 +1,82 @@
+{
+  "name": "maplibre-gl-video-export",
+  "version": "0.1.0",
+  "description": "Video export plugin for MapLibre GL JS",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./animations": "./src/animations.js",
+    "./controller": "./src/controller.js",
+    "./utils": "./src/utils.js"
+  },
+  "scripts": {
+    "build": "rollup -c && node scripts/prepare-dist.js",
+    "prepublishOnly": "npm run build",
+    "download-encoder": "bash scripts/download-encoder.sh",
+    "setup-demo": "bash scripts/setup-demo.sh",
+    "demo": "python3 -m http.server 8080 --directory demo",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix"
+  },
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^28.0.9",
+    "@rollup/plugin-node-resolve": "^16.0.3",
+    "@rollup/plugin-terser": "^0.4.4",
+    "eslint": "^8.57.1",
+    "eslint-config-standard": "^17.1.0",
+    "rollup": "^4.0.0"
+  },
+  "files": [
+    "src/",
+    "dist/",
+    "vendor/webm/",
+    "LICENSE",
+    "README.md"
+  ],
+  "keywords": [
+    "maplibre",
+    "maplibre-gl",
+    "video",
+    "export",
+    "mp4",
+    "webm",
+    "vp9",
+    "animation",
+    "recording",
+    "screen-capture",
+    "geospatial",
+    "security"
+  ],
+  "author": "Brice Person",
+  "license": "BSD-3-Clause",
+  "contributors": [
+    {
+      "name": "Brice Person"
+    }
+  ],
+  "credits": {
+    "inspiration": "@mourner (Vladimir Agafonkin) - Creator of Leaflet, core contributor to Mapbox GL JS",
+    "libraries": [
+      "mediabunny - Media toolkit (MPL-2.0)",
+      "webm-wasm - WebM encoder (Apache-2.0)",
+      "mp4-h264 - MP4 encoder (MIT)",
+      "wasm-feature-detect - SIMD detection (Apache-2.0)",
+      "MapLibre GL JS - Mapping engine (BSD-3-Clause)"
+    ]
+  },
+  "peerDependencies": {
+    "maplibre-gl": ">=5.11.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bjperson/maplibre-gl-video-export"
+  },
+  "homepage": "https://github.com/bjperson/maplibre-gl-video-export#readme",
+  "bugs": {
+    "url": "https://github.com/bjperson/maplibre-gl-video-export/issues"
+  },
+  "dependencies": {
+    "mediabunny": "^1.24.2"
+  }
+}
