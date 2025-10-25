@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+
+# Vendor files
+# WebM: INCLUDED in repo (royalty-free, required for WebM support)
+# MP4: NOT included (optional, CDN fallback available)
+vendor/mp4/
+
+# Keep vendor README and WebM files
+!vendor/README.md
+!vendor/webm/
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test coverage
+coverage/
+
+# Temporary files
+temp.*
+temp*
+*.tmp
+scratch.*
+
+# Work-in-progress documentation
+CHANGELOG.md
+CUSTOM-ANIMATIONS.md
+SYSTEM-REFERENCE.md
+PNG-SEQUENCE-PLAN.md
+TUTORIAL.md
