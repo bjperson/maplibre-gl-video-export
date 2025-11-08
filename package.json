@@ -29,7 +29,13 @@
   },
   "files": [
     "src/",
-    "dist/",
+    "dist/maplibre-gl-video-export/maplibre-gl-video-export.js",
+    "dist/maplibre-gl-video-export/maplibre-gl-video-export.min.js",
+    "dist/maplibre-gl-video-export/maplibre-gl-video-export.js.map",
+    "dist/maplibre-gl-video-export/maplibre-gl-video-export.min.js.map",
+    "dist/maplibre-gl-video-export/INSTALL.md",
+    "dist/maplibre-gl-video-export/vendor/README.md",
+    "dist/maplibre-gl-video-export/vendor/webm/",
     "vendor/webm/",
     "LICENSE",
     "README.md"
@@ -70,7 +76,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/bjperson/maplibre-gl-video-export"
+    "url": "git+https://github.com/bjperson/maplibre-gl-video-export.git"
   },
   "homepage": "https://github.com/bjperson/maplibre-gl-video-export#readme",
   "bugs": {

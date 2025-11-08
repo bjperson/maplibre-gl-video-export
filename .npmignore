@@ -1,0 +1,17 @@
+# Exclude MP4/H.264 encoder from npm package (patent/licensing concerns)
+# Users can download separately if needed
+dist/*/vendor/mp4/
+vendor/mp4/
+
+# Development files
+demo/
+scripts/
+*.log
+.DS_Store
+node_modules/
+CHECKLIST.md
+TUTORIAL.md
+
+# Git files
+.git/
+.gitignore
