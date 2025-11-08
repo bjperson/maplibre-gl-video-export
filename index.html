@@ -1,0 +1,1198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>MapLibre GL Video Export - Demo</title>
+    <meta name="description" content="Export beautiful WebM and MP4 videos from MapLibre maps with smart animations. Real-time recording with frozen time control.">
+
+    <!-- Content Security Policy: Defense in depth against XSS attacks -->
+    <meta http-equiv="Content-Security-Policy" content="
+        default-src 'self';
+        script-src 'self' 'unsafe-inline' https://unpkg.com blob:;
+        style-src 'self' 'unsafe-inline' https://unpkg.com https://tiles.openfreemap.org;
+        img-src 'self' data: blob: https: http:;
+        font-src 'self' data: https://tiles.openfreemap.org;
+        connect-src 'self' https://unpkg.com https://tiles.openfreemap.org https://server.arcgisonline.com https://s3.amazonaws.com;
+        worker-src 'self' blob:;
+        child-src 'self' blob:;
+        frame-src 'none';
+        object-src 'none';
+        base-uri 'self';
+        form-action 'self';
+    ">
+
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🎬</text></svg>">
+
+    <!-- Open Graph / Mastodon / Facebook -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://bjperson.github.io/maplibre-gl-video-export/">
+    <meta property="og:title" content="MapLibre GL Video Export Plugin">
+    <meta property="og:description" content="Export high-quality WebM and MP4 videos from MapLibre GL maps with cinematic animations.">
+    <meta property="og:image" content="https://bjperson.github.io/maplibre-gl-video-export/demo/preview.jpg">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="MapLibre GL Video Export Plugin">
+    <meta name="twitter:description" content="Export high-quality WebM and MP4 videos from MapLibre GL maps with cinematic animations">
+    <meta name="twitter:image" content="https://bjperson.github.io/maplibre-gl-video-export/demo/preview.jpg">
+
+    <!-- MapLibre GL JS 5.11.0+ (required for video export plugin) with SRI integrity check -->
+    <script src="https://unpkg.com/maplibre-gl@5.11.0/dist/maplibre-gl.js"
+            integrity="sha384-UqLzv/PVLQB7sEV62X3GYMHHoOqGqOb1iE7JdfWsbtK4gYx1Q1VzU3qsx+otdWEa"
+            crossorigin="anonymous"></script>
+    <link href="https://unpkg.com/maplibre-gl@5.11.0/dist/maplibre-gl.css"
+          integrity="sha384-mnM9NG1099tBMNxdDQNDKIxYcn/fmqQXFJvbT5l1MsrWvzfxBEffceBsw75/cW2R"
+          crossorigin="anonymous"
+          rel="stylesheet" />
+
+    <!-- Video Export Plugin -->
+    <!-- <script src="assets/js/maplibre-gl-video-export.min.js"></script> -->
+    <script src="https://unpkg.com/maplibre-gl-video-export@latest/dist/maplibre-gl-video-export.min.js"></script>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        html, body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            height: 100%;
+            width: 100%;
+            overflow: hidden;
+            position: relative;
+            max-width: 100%;
+        }
+
+        #map {
+            position: absolute;
+            top: 60px;
+            left: 0;
+            right: 0;
+            bottom: 45px; /* footer height */
+            box-sizing: border-box;
+        }
+
+        footer {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            width: 100%;
+            background: rgba(255,255,255,0.95);
+            padding: 12px 20px;
+            text-align: center;
+            font-size: 12px;
+            color: #666;
+            border-top: 1px solid #ddd;
+            z-index: 1000;
+            box-sizing: border-box;
+        }
+
+        .header {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            width: 100%;
+            height: 60px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            display: flex;
+            align-items: center;
+            padding: 0 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            z-index: 1000;
+            box-sizing: border-box;
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+            font-weight: 600;
+        }
+
+        .header .subtitle {
+            margin-left: 20px;
+            opacity: 0.9;
+            font-size: 14px;
+        }
+
+        /* Ensure all MapLibre controls stay within viewport */
+        .maplibregl-ctrl {
+            max-width: calc(100vw - 20px);
+        }
+
+        /* Demo panel as MapLibre control */
+        .maplibregl-ctrl.demo-panel {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            width: clamp(280px, 25vw, 400px);
+            margin: 10px;
+            transition: transform 0.3s ease;
+            position: relative;
+        }
+
+        .maplibregl-ctrl.demo-panel.collapsed {
+            transform: translateX(calc(-100% + 50px));
+        }
+
+        .maplibregl-ctrl.demo-panel.collapsed .panel-header,
+        .maplibregl-ctrl.demo-panel.collapsed .demo-panel-content {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .maplibregl-ctrl.demo-panel .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 20px;
+            cursor: pointer;
+            user-select: none;
+            border-radius: 8px 8px 0 0;
+            transition: background 0.2s, opacity 0.3s ease;
+        }
+
+        .maplibregl-ctrl.demo-panel .panel-header:hover {
+            background: #f8f9ff;
+        }
+
+        .maplibregl-ctrl.demo-panel h2 {
+            margin: 0;
+            font-size: 18px;
+            color: #333;
+        }
+
+        .maplibregl-ctrl.demo-panel .panel-toggle {
+            width: 24px;
+            height: 24px;
+            border: none;
+            background: #f0f0f0;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 18px;
+            line-height: 1;
+            color: #666;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .maplibregl-ctrl.demo-panel .panel-toggle:hover {
+            background: #e0e0e0;
+            color: #333;
+        }
+
+        .maplibregl-ctrl.demo-panel .demo-panel-content {
+            padding: 0 20px 20px 20px;
+            transition: opacity 0.3s ease;
+        }
+
+        .maplibregl-ctrl.demo-panel .section {
+            margin-bottom: 20px;
+        }
+
+        .maplibregl-ctrl.demo-panel label {
+            display: block;
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .maplibregl-ctrl.demo-panel select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            background: white;
+        }
+
+        .maplibregl-ctrl.demo-panel button {
+            width: 100%;
+            padding: 10px;
+            border: none;
+            border-radius: 4px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-secondary {
+            background: #f0f0f0;
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .btn-secondary:hover {
+            background: #e0e0e0;
+        }
+
+        .info-box {
+            background: #f8f9ff;
+            border-left: 3px solid #667eea;
+            padding: 12px;
+            border-radius: 4px;
+            margin-top: 20px;
+        }
+
+        .info-box h3 {
+            margin: 0 0 8px 0;
+            font-size: 14px;
+            color: #667eea;
+        }
+
+        .info-box p {
+            margin: 0;
+            font-size: 12px;
+            color: #666;
+            line-height: 1.5;
+        }
+
+        .status-message {
+            position: fixed;
+            bottom: 60px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: white;
+            padding: 12px 24px;
+            border-radius: 24px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            font-size: 14px;
+            font-weight: 500;
+            display: none;
+            z-index: 1001;
+        }
+
+        .status-message.show {
+            display: block;
+            animation: slideUp 0.3s ease;
+        }
+
+        .status-message.success {
+            background: #4caf50;
+            color: white;
+        }
+
+        .status-message.error {
+            background: #f44336;
+            color: white;
+        }
+
+        @keyframes slideUp {
+            from {
+                transform: translate(-50%, 100%);
+                opacity: 0;
+            }
+            to {
+                transform: translate(-50%, 0);
+                opacity: 1;
+            }
+        }
+
+        .maplibregl-ctrl.demo-panel .panel-tab {
+            position: absolute;
+            right: -42px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: white;
+            border-radius: 0 8px 8px 0;
+            padding: 12px 8px;
+            box-shadow: 2px 2px 10px rgba(0,0,0,0.1);
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            color: #667eea;
+            writing-mode: vertical-rl;
+            opacity: 0;
+            transition: opacity 0.3s ease 0.3s, right 0.3s ease;
+            pointer-events: none;
+        }
+
+        .maplibregl-ctrl.demo-panel.collapsed .panel-tab {
+            opacity: 1;
+            pointer-events: all;
+            right: -42px;
+        }
+
+        /* Adaptations for top-right position */
+        .maplibregl-ctrl-top-right .demo-panel.collapsed {
+            transform: translateX(calc(100% - 50px));
+        }
+
+        .maplibregl-ctrl-top-right .demo-panel .panel-tab {
+            right: auto;
+            left: -42px;
+            border-radius: 8px 0 0 8px;
+        }
+
+        .maplibregl-ctrl-top-right .demo-panel.collapsed .panel-tab {
+            left: -42px;
+        }
+
+        /* Adaptations for bottom-left position */
+        .maplibregl-ctrl-bottom-left .demo-panel .panel-tab {
+            top: -42px;
+            right: auto;
+            bottom: auto;
+            transform: translateX(-50%) rotate(0deg);
+            left: 50%;
+            border-radius: 8px 8px 0 0;
+            writing-mode: horizontal-tb;
+            padding: 8px 12px;
+        }
+
+        .maplibregl-ctrl-bottom-left .demo-panel.collapsed .panel-tab {
+            top: -42px;
+        }
+
+        /* Adaptations for bottom-right position */
+        .maplibregl-ctrl-bottom-right .demo-panel.collapsed {
+            transform: translateX(calc(100% - 50px));
+        }
+
+        .maplibregl-ctrl-bottom-right .demo-panel .panel-tab {
+            top: -42px;
+            right: auto;
+            bottom: auto;
+            left: 50%;
+            transform: translateX(-50%) rotate(0deg);
+            border-radius: 8px 8px 0 0;
+            writing-mode: horizontal-tb;
+            padding: 8px 12px;
+        }
+
+        .maplibregl-ctrl-bottom-right .demo-panel.collapsed .panel-tab {
+            top: -42px;
+        }
+
+        footer a {
+            color: #667eea;
+            text-decoration: none;
+        }
+
+        /* Responsive adjustments */
+        @media (max-width: 1200px) {
+            .maplibregl-ctrl.demo-panel {
+                width: clamp(280px, 30vw, 350px);
+            }
+        }
+
+        @media (max-width: 768px) {
+            .maplibregl-ctrl.demo-panel {
+                width: clamp(260px, 40vw, 320px);
+            }
+        }
+
+        @media (max-width: 480px) {
+            .maplibregl-ctrl.demo-panel {
+                width: calc(100vw - 40px);
+                max-width: 320px;
+                min-width: 260px;
+            }
+
+            .header h1 {
+                font-size: 18px;
+            }
+
+            .header .subtitle {
+                display: none;
+            }
+
+            footer {
+                font-size: 10px;
+                padding: 8px 10px;
+            }
+        }
+
+        /* Dark mode support */
+        @media (prefers-color-scheme: dark) {
+            html, body {
+                background: #1a1a1a;
+            }
+
+            .header {
+                background: linear-gradient(135deg, #4a5568 0%, #2d3748 100%);
+                box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            }
+
+            footer {
+                background: rgba(45,45,45,0.95);
+                color: #b0b0b0;
+                border-top: 1px solid #333;
+            }
+
+            footer a {
+                color: #81a1c1;
+            }
+
+            .maplibregl-ctrl.demo-panel {
+                background: #2d2d2d;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.5);
+            }
+
+            .maplibregl-ctrl.demo-panel .panel-header:hover {
+                background: #3d3d3d;
+            }
+
+            .maplibregl-ctrl.demo-panel h2 {
+                color: #e0e0e0;
+            }
+
+            .maplibregl-ctrl.demo-panel .panel-toggle {
+                background: #3d3d3d;
+                color: #b0b0b0;
+            }
+
+            .maplibregl-ctrl.demo-panel .panel-toggle:hover {
+                background: #4d4d4d;
+                color: #e0e0e0;
+            }
+
+            .maplibregl-ctrl.demo-panel label {
+                color: #b0b0b0;
+            }
+
+            .maplibregl-ctrl.demo-panel select {
+                background: #3d3d3d;
+                border: 1px solid #555;
+                color: #e0e0e0;
+            }
+
+            .maplibregl-ctrl.demo-panel select option {
+                background: #3d3d3d;
+                color: #e0e0e0;
+            }
+
+            .btn-secondary {
+                background: #3d3d3d;
+                color: #e0e0e0;
+            }
+
+            .btn-secondary:hover {
+                background: #4d4d4d;
+            }
+
+            .info-box {
+                background: #2d3748;
+                border-left: 3px solid #4a5568;
+            }
+
+            .info-box h3 {
+                color: #81a1c1;
+            }
+
+            .info-box p {
+                color: #b0b0b0;
+            }
+
+            .status-message {
+                background: #2d2d2d;
+                color: #e0e0e0;
+            }
+
+            .maplibregl-ctrl.demo-panel .panel-tab {
+                background: #2d2d2d;
+                color: #81a1c1;
+            }
+
+            /* Position adaptations in dark mode */
+            .maplibregl-ctrl-top-right .demo-panel .panel-tab,
+            .maplibregl-ctrl-bottom-left .demo-panel .panel-tab,
+            .maplibregl-ctrl-bottom-right .demo-panel .panel-tab {
+                background: #2d2d2d;
+                color: #81a1c1;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <h1>🎬 MapLibre Video Export</h1>
+        <span class="subtitle">Smart animations for any map <span id="plugin-version"></span></span>
+    </header>
+
+    <div id="map"></div>
+
+    <div id="status" class="status-message"></div>
+
+    <script>
+        // Display plugin version in header
+        document.addEventListener('DOMContentLoaded', () => {
+            const versionElement = document.getElementById('plugin-version');
+            if (versionElement && maplibregl.VideoExportControl.version) {
+                versionElement.textContent = `(v${maplibregl.VideoExportControl.version})`;
+            }
+        });
+
+        // Map styles
+        const styles = {
+            // OpenFreeMap vector tiles (OpenMapTiles schema)
+            // https://openfreemap.org
+            bright: 'https://tiles.openfreemap.org/styles/bright',
+            positron: 'https://tiles.openfreemap.org/styles/positron',
+            liberty: 'https://tiles.openfreemap.org/styles/liberty',
+
+            // Hybrid: Satellite imagery + 3D terrain + labels only
+            // We load the bright style which has all the vector layers for smart animations,
+            // then modify it to add satellite + terrain and hide non-label layers
+            satelliteHybrid: 'https://tiles.openfreemap.org/styles/bright',
+
+            // Pure satellite raster
+            satellite: {
+                version: 8,
+                sprite: 'https://tiles.openfreemap.org/sprites/ofm_f384/ofm',
+                sources: {
+                    'esri-satellite': {
+                        type: 'raster',
+                        tiles: [
+                            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+                        ],
+                        tileSize: 256,
+                        attribution: '© <a target="_blank" rel="noopener" href"https://www.esri.com/">Esri</a>, Maxar, Earthstar Geographics, and the GIS User Community',
+                        minzoom: 0,
+                        maxzoom: 19
+                    }
+                },
+                sky: {
+                    'sky-color': '#99c1f1',
+                    'sky-horizon-blend': 0.35,
+                    'horizon-color': '#62a0ea',
+                    'horizon-fog-blend': 0.73,
+                    'fog-color': '#000000',
+                    'fog-ground-blend': 0.56,
+                    'atmosphere-blend': [
+                        'interpolate',
+                        ['linear'],
+                        ['zoom'],
+                        0, 0,
+                        5, 0,
+                        7, 0
+                    ]
+                },
+                layers: [{
+                    id: 'esri-satellite-layer',
+                    type: 'raster',
+                    source: 'esri-satellite'
+                }]
+            },
+            // Satellite with 3D terrain (spectacular for mountains!)
+            satelliteTerrain: {
+                version: 8,
+                sprite: 'https://tiles.openfreemap.org/sprites/ofm_f384/ofm',
+                sources: {
+                    'esri-satellite': {
+                        type: 'raster',
+                        tiles: [
+                            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+                        ],
+                        tileSize: 256,
+                        maxzoom: 19,
+                        attribution: '© Esri, Maxar, Earthstar Geographics'
+                    },
+                    'terrarium': {
+                        type: 'raster-dem',
+                        tiles: [
+                            'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'
+                        ],
+                        minzoom: 0,
+                        maxzoom: 15,
+                        tileSize: 256,
+                        encoding: 'terrarium',
+                        attribution: 'DEM © <a href="https://github.com/tilezen/joerd">Mapzen Terrain Tiles</a>'
+                    }
+                },
+                terrain: {
+                    source: 'terrarium',
+                    exaggeration: 1.5
+                },
+                sky: {
+                    'sky-color': '#99c1f1',
+                    'sky-horizon-blend': 0.35,
+                    'horizon-color': '#62a0ea',
+                    'horizon-fog-blend': 0.73,
+                    'fog-color': '#000000',
+                    'fog-ground-blend': 0.56,
+                    'atmosphere-blend': [
+                        'interpolate',
+                        ['linear'],
+                        ['zoom'],
+                        0, 0,
+                        5, 0.5,
+                        7, 1
+                    ]
+                },
+                layers: [
+                    {
+                        id: 'satellite-layer',
+                        type: 'raster',
+                        source: 'esri-satellite'
+                    },
+                    {
+                        id: 'hillshade',
+                        type: 'hillshade',
+                        source: 'terrarium',
+                        paint: {
+                            'hillshade-exaggeration': 0.3,
+                            'hillshade-shadow-color': '#000000'
+                        }
+                    }
+                ]
+            }
+        };
+
+        // Auto-discover sprite URL from OpenFreeMap to avoid hardcoding versioned URLs
+        // Updates satellite styles asynchronously when the style is fetched
+        fetch('https://tiles.openfreemap.org/styles/bright')
+            .then(r => r.json())
+            .then(style => {
+                if (style.sprite) {
+                    // Update satellite styles with discovered sprite URL
+                    if (styles.satellite) styles.satellite.sprite = style.sprite;
+                    if (styles.satelliteTerrain) styles.satelliteTerrain.sprite = style.sprite;
+                }
+            })
+            .catch(() => {}); // Silent fail, hardcoded fallback will be used
+
+        // Locations
+        const locations = {
+            world: { center: [0, 20], zoom: 2 },
+            alps: { center: [7.7, 46.0], zoom: 10 }, // Swiss Alps (Mont Blanc area)
+            manhattan: { center: [-73.98, 40.75], zoom: 13 },
+            tokyo: { center: [139.7, 35.65], zoom: 11 },
+            'grand-canyon': { center: [-112.11, 36.10], zoom: 11 },
+            paris: { center: [2.35, 48.86], zoom: 12 }, // Paris (Eiffel Tower area)
+            reykjavik: { center: [-21.9, 64.15], zoom: 10 }, // Iceland volcanic landscapes
+            rio: { center: [-43.21, -22.95], zoom: 11 }, // Rio de Janeiro (Corcovado)
+            sydney: { center: [151.21, -33.86], zoom: 12 }, // Sydney Opera House
+            venice: { center: [12.34, 45.44], zoom: 13 }, // Venice canals
+            fjords: { center: [6.8, 62.1], zoom: 9 }, // Norwegian fjords (Geirangerfjord)
+            'monument-valley': { center: [-110.11, 36.99], zoom: 12 }, // Monument Valley
+            yosemite: { center: [-119.54, 37.75], zoom: 11 } // Yosemite Valley
+        };
+
+        // Initialize everything after page is fully loaded
+        // This ensures CSS Grid has finished calculating dimensions
+        window.addEventListener('load', () => {
+            let map;
+            let videoControl = null;
+
+            // Status messages helper
+            function showStatus(message, type = '') {
+                const status = document.getElementById('status');
+                status.textContent = message;
+                status.className = `status-message show ${type}`;
+
+                setTimeout(() => {
+                    status.classList.remove('show');
+                }, 3000);
+            }
+
+            // Add terrain function
+            function addTerrain() {
+                // Check if terrain source exists
+                if (!map.getSource('terrarium')) {
+                    map.addSource('terrarium', {
+                        type: 'raster-dem',
+                        tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
+                        minzoom: 0,
+                        maxzoom: 15,
+                        tileSize: 256,
+                        encoding: 'terrarium'
+                    });
+                }
+
+                // If video control is active, reload it after terrain change
+                // This ensures terrain detection matches the current state
+                const hadVideoControl = videoControl !== null;
+                if (hadVideoControl) {
+                    map.removeControl(videoControl);
+                    videoControl = null;
+                }
+
+                // Toggle terrain
+                if (map.getTerrain()) {
+                    map.setTerrain(null);
+                    showStatus('3D terrain disabled', 'success');
+                } else {
+                    map.setTerrain({
+                        source: 'terrarium',
+                        exaggeration: 1.5
+                    });
+                    map.setPitch(50);
+                    showStatus('3D terrain enabled! (MapZen DEM)', 'success');
+                }
+
+                // Re-add video control once terrain change is rendered
+                if (hadVideoControl) {
+                    map.once('idle', () => {
+                        addVideoExport();
+                        showStatus('Video control reloaded with terrain changes', 'success');
+                    });
+                }
+            }
+
+            // Demo Panel Control - MapLibre IControl implementation
+            class DemoPanelControl {
+                constructor() {
+                    this._collapsed = false;
+                }
+
+                onAdd(map) {
+                    this._map = map;
+                    this._container = document.createElement('div');
+                    this._container.className = 'maplibregl-ctrl demo-panel';
+
+                    this._container.innerHTML = `
+                    <div class="panel-header">
+                        <h2>Demo Options</h2>
+                        <button class="panel-toggle">×</button>
+                    </div>
+                    <div class="panel-tab">Demo</div>
+
+                    <div class="demo-panel-content">
+                        <div class="section">
+                            <label>Map Style</label>
+                            <select id="style-select">
+                                <option value="satelliteHybrid" selected>🛰️ Satellite + 3D Terrain + Labels</option>
+                                <option value="satelliteTerrain">🏔️ Satellite + 3D Terrain</option>
+                                <option value="satellite">🌍 Satellite (Pure)</option>
+                                <option value="bright">🗺️ Bright (Vector)</option>
+                                <option value="positron">⚪ Positron (Minimal)</option>
+                                <option value="liberty">🎨 Liberty (Colorful)</option>
+                            </select>
+                        </div>
+
+                        <div class="section">
+                            <label>Demo Location</label>
+                            <select id="location-select">
+                                <option value="world">World Overview</option>
+                                <option value="alps">Swiss Alps (3D)</option>
+                                <option value="manhattan">Manhattan, NYC</option>
+                                <option value="tokyo">Tokyo, Japan</option>
+                                <option value="grand-canyon">Grand Canyon, USA</option>
+                                <option value="paris">Paris, France</option>
+                                <option value="reykjavik">Reykjavik, Iceland</option>
+                                <option value="rio">Rio de Janeiro, Brazil</option>
+                                <option value="sydney">Sydney, Australia</option>
+                                <option value="venice">Venice, Italy</option>
+                                <option value="fjords">Norwegian Fjords</option>
+                                <option value="monument-valley">Monument Valley, USA</option>
+                                <option value="yosemite">Yosemite Valley, USA</option>
+                            </select>
+                        </div>
+
+                        <div class="section">
+                            <button class="btn-primary" id="video-export-btn">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                    <circle cx="12" cy="12" r="10" stroke-width="2"/>
+                                    <path d="M10 8l6 4-6 4V8z" fill="currentColor"/>
+                                    <circle cx="18" cy="6" r="3" fill="#ef4444" stroke="#b91c1c" stroke-width="1"/>
+                                </svg> Add Video Export Control
+                            </button>
+                            <button class="btn-secondary" id="terrain-btn">
+                                🏔️ Enable 3D Terrain
+                            </button>
+                        </div>
+
+                        <div class="info-box">
+                            <h3>ℹ️ How to use</h3>
+                            <p>
+                                1. Choose a map style and location<br>
+                                2. Add the Video Export control<br>
+                                3. Click the video icon in the top left controls<br>
+                                4. Select animation type and settings<br>
+                                5. Click "Record" to export video
+                            </p>
+                        </div>
+
+                        <div class="info-box" style="margin-top: 10px;">
+                            <h3>⚠️ Requirements</h3>
+                            <p>
+                                Best performance with WebAssembly SIMD
+                                (enabled by default in modern browsers).
+                            </p>
+                        </div>
+                    </div>
+                `;
+
+                    // Setup toggle functionality
+                    const header = this._container.querySelector('.panel-header');
+                    const toggleBtn = this._container.querySelector('.panel-toggle');
+                    const tab = this._container.querySelector('.panel-tab');
+
+                    const toggle = () => {
+                        this._collapsed = !this._collapsed;
+                        this._container.classList.toggle('collapsed', this._collapsed);
+                    };
+
+                    header.addEventListener('click', toggle);
+                    tab.addEventListener('click', toggle);
+                    toggleBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        toggle();
+                    });
+
+                    return this._container;
+                }
+
+                onRemove() {
+                    this._container.parentNode.removeChild(this._container);
+                    this._map = undefined;
+                }
+            }
+
+            // Add video export control function
+            function addVideoExport() {
+                // Check for time control support
+                if (typeof maplibregl.setNow !== 'function') {
+                    showStatus('⚠️ Time control not available - check MapLibre version', 'error');
+                    alert('This demo requires MapLibre GL JS with time control support (setNow/restoreNow).');
+                    return;
+                }
+
+                if (videoControl) {
+                    map.removeControl(videoControl);
+                    videoControl = null;
+                    showStatus('Video export removed', 'success');
+                    return;
+                }
+
+                // Ensure map style is fully loaded before adding control
+                // This allows proper detection of terrain, 3D buildings, layers, sprites, fonts, etc.
+                if (!map.isStyleLoaded()) {
+                    showStatus('⏳ Waiting for map to load...', 'success');
+                    map.once('idle', () => {
+                        addVideoExport(); // Retry once loaded
+                    });
+                    return;
+                }
+
+                videoControl = new maplibregl.VideoExportControl({
+                    animation: 'smart',
+                    duration: 30000,
+                    resolution: 'auto',
+
+                    onStart: () => {
+                        console.log('Recording started');
+                        showStatus('Recording started...', 'success');
+                    },
+
+                    onProgress: (frame, time) => {
+                        if (frame % 60 === 0) {
+                            console.log(`Progress: ${frame} frames, ${(time/1000).toFixed(1)}s`);
+                        }
+                    },
+
+                    onComplete: (blob, frames) => {
+                        const sizeMB = (blob.size / 1024 / 1024).toFixed(2);
+                        showStatus(`✅ Video exported! ${sizeMB} MB, ${frames} frames`, 'success');
+                    },
+
+                    onError: (error) => {
+                        console.error('Export error:', error);
+                        showStatus('Export failed: ' + error.message, 'error');
+                    }
+                });
+
+                map.addControl(videoControl, 'top-left');
+                showStatus('Video export control added!', 'success');
+            }
+
+            // Get the map container
+            const mapContainer = document.getElementById('map');
+
+            console.log('Map container initialized');
+
+            // Parse URL hash for initial position (#zoom/lat/lng or #zoom/lat/lng/bearing/pitch)
+            function parseHash() {
+                const hash = window.location.hash.slice(1); // Remove #
+                if (!hash) return null;
+
+                const parts = hash.split('/').map(parseFloat);
+                if (parts.length >= 3 && parts.every(n => !isNaN(n))) {
+                    return {
+                        zoom: parts[0],
+                        center: [parts[2], parts[1]], // [lng, lat]
+                        bearing: parts[3] || 0,
+                        pitch: parts[4] || 0
+                    };
+                }
+                return null;
+            }
+
+            // Get initial position from hash or use defaults
+            const initialPos = parseHash() || { center: [0, 20], zoom: 2, bearing: 0, pitch: 0 };
+            if (window.location.hash) {
+                console.log('📍 Loaded position from URL:', initialPos);
+            }
+
+            // Initialize map with proper dimensions
+            map = new maplibregl.Map({
+                container: 'map',
+                style: styles.satelliteHybrid, // Start with hybrid satellite + vector labels
+                center: initialPos.center,
+                zoom: initialPos.zoom,
+                pitch: initialPos.pitch,
+                bearing: initialPos.bearing,
+                antialias: true,
+                validateStyle: false,
+                maxPitch: 85,
+            });
+
+
+            // Add navigation control
+            map.addControl(new maplibregl.NavigationControl(), 'bottom-right');
+
+            // Add globe control
+            map.addControl(new maplibregl.GlobeControl(), 'bottom-right');
+
+
+            // Add demo panel control
+            const demoPanel = new DemoPanelControl();
+            map.addControl(demoPanel, 'top-right');
+
+            // Track current style
+            let currentStyleKey = 'satelliteHybrid';
+
+            // Setup satellite hybrid: add satellite + terrain and hide non-label layers
+            function setupSatelliteHybrid() {
+                if (currentStyleKey !== 'satelliteHybrid') return;
+
+                // Add satellite source
+                if (!map.getSource('esri-satellite')) {
+                    map.addSource('esri-satellite', {
+                        type: 'raster',
+                        tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+                        tileSize: 256,
+                        maxzoom: 19,
+                        attribution: '© Esri, Maxar, Earthstar Geographics'
+                    });
+                }
+
+                // Add terrain source
+                if (!map.getSource('terrarium')) {
+                    map.addSource('terrarium', {
+                        type: 'raster-dem',
+                        tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
+                        minzoom: 0,
+                        maxzoom: 15,
+                        tileSize: 256,
+                        encoding: 'terrarium',
+                        attribution: 'DEM © Mapzen Terrain Tiles'
+                    });
+                }
+
+                // Set terrain
+                map.setTerrain({
+                    source: 'terrarium',
+                    exaggeration: 1.5
+                });
+
+                // Get all layers
+                const layers = map.getStyle().layers;
+
+                // Find the first non-background layer (usually the first symbol/fill/line layer)
+                const firstSymbolLayer = layers.find(layer =>
+                    layer.type === 'symbol' ||
+                    layer.type === 'line' ||
+                    layer.type === 'fill' ||
+                    layer.type === 'circle'
+                );
+
+                // Add satellite layer (it will be under all vector layers)
+                if (!map.getLayer('satellite-base')) {
+                    map.addLayer({
+                        id: 'satellite-base',
+                        type: 'raster',
+                        source: 'esri-satellite',
+                        paint: { 'raster-opacity': 1 }
+                    }, firstSymbolLayer ? firstSymbolLayer.id : undefined);
+                }
+
+                // Add hillshade above satellite but under vector layers
+                if (!map.getLayer('hillshade-hybrid')) {
+                    map.addLayer({
+                        id: 'hillshade-hybrid',
+                        type: 'hillshade',
+                        source: 'terrarium',
+                        paint: {
+                            'hillshade-exaggeration': 0.3,
+                            'hillshade-shadow-color': '#000000'
+                        }
+                    }, firstSymbolLayer ? firstSymbolLayer.id : undefined);
+                }
+
+                // Hide all non-label vector layers (keep them for smart animations detection)
+                layers.forEach(layer => {
+                    // Hide background layer to show satellite
+                    if (layer.type === 'background') {
+                        map.setPaintProperty(layer.id, 'background-opacity', 0);
+                        return;
+                    }
+
+                    // Keep labels visible
+                    if (layer.type === 'symbol' && (
+                        layer.id.includes('label') ||
+                        layer.id.includes('place') ||
+                        layer.id.includes('name')
+                    )) {
+                        // Make labels white with black halo for better contrast on satellite
+                        map.setPaintProperty(layer.id, 'text-color', '#ffffff');
+                        map.setPaintProperty(layer.id, 'text-halo-color', 'rgba(0,0,0,0.8)');
+                        map.setPaintProperty(layer.id, 'text-halo-width', 2);
+                        return;
+                    }
+
+                    // Hide everything else (roads, water, buildings, etc.) but keep them in the style
+                    if (layer.type === 'fill') {
+                        map.setPaintProperty(layer.id, 'fill-opacity', 0);
+                    } else if (layer.type === 'line') {
+                        map.setPaintProperty(layer.id, 'line-opacity', 0);
+                    } else if (layer.type === 'fill-extrusion') {
+                        map.setPaintProperty(layer.id, 'fill-extrusion-opacity', 0);
+                    } else if (layer.type === 'circle') {
+                        map.setPaintProperty(layer.id, 'circle-opacity', 0);
+                    } else if (layer.type === 'symbol' && !layer.id.includes('label')) {
+                        map.setLayoutProperty(layer.id, 'visibility', 'none');
+                    }
+                });
+
+                console.log('🛰️ Satellite hybrid mode with 3D terrain + labels activated');
+            }
+
+            // Setup on style load
+            map.on('style.load', () => {
+                setupSatelliteHybrid();
+            });
+
+            // Setup all event listeners when map is ready
+            map.on('load', () => {
+                // Initial setup
+                setupSatelliteHybrid();
+                // Style selector
+                document.getElementById('style-select').addEventListener('change', (e) => {
+                    currentStyleKey = e.target.value;
+
+                    // If video control is active, reload it after style change
+                    // This ensures feature detection (terrain, buildings, layers) matches the new style
+                    const hadVideoControl = videoControl !== null;
+                    if (hadVideoControl) {
+                        map.removeControl(videoControl);
+                        videoControl = null;
+                    }
+
+                    map.setStyle(styles[e.target.value]);
+                    showStatus('Map style changed', 'success');
+
+                    // Re-add video control once new style is loaded
+                    if (hadVideoControl) {
+                        map.once('idle', () => {
+                            addVideoExport();
+                            showStatus('Video control reloaded with new style', 'success');
+                        });
+                    }
+                });
+
+                // Location selector
+                document.getElementById('location-select').addEventListener('change', (e) => {
+                    const loc = locations[e.target.value];
+                    map.flyTo({
+                        ...loc,
+                        duration: 2000,
+                        essential: true
+                    });
+                    showStatus(`Flying to ${e.target.value.replace('-', ' ')}`, 'success');
+                });
+
+                // Terrain button
+                document.getElementById('terrain-btn').addEventListener('click', addTerrain);
+
+                // Video export button
+                document.getElementById('video-export-btn').addEventListener('click', addVideoExport);
+
+                // Handle window resize
+                let resizeTimer;
+                window.addEventListener('resize', () => {
+                    clearTimeout(resizeTimer);
+                    resizeTimer = setTimeout(() => {
+                        map.resize();
+                        console.log('Map resized to fit new window dimensions');
+                    }, 250);
+                });
+
+                // Initial resize after a short delay
+                setTimeout(() => {
+                    map.resize();
+                }, 500);
+
+                // Update URL hash on map move (debounced)
+                let hashUpdateTimer;
+                map.on('moveend', () => {
+                    clearTimeout(hashUpdateTimer);
+                    hashUpdateTimer = setTimeout(() => {
+                        const center = map.getCenter();
+                        const zoom = map.getZoom();
+                        const bearing = map.getBearing();
+                        const pitch = map.getPitch();
+
+                        // Format: #zoom/lat/lng/bearing/pitch (omit bearing/pitch if both are 0)
+                        let hash = `#${zoom.toFixed(2)}/${center.lat.toFixed(5)}/${center.lng.toFixed(5)}`;
+                        if (bearing !== 0 || pitch !== 0) {
+                            hash += `/${bearing.toFixed(1)}/${pitch.toFixed(1)}`;
+                        }
+
+                        // Update hash without triggering hashchange event (replaceState)
+                        if (window.location.hash !== hash) {
+                            history.replaceState(null, null, hash);
+                        }
+                    }, 300); // Debounce 300ms
+                });
+
+                // Listen to hash changes (browser back/forward)
+                window.addEventListener('hashchange', () => {
+                    const pos = parseHash();
+                    if (pos) {
+                        map.jumpTo({
+                            center: pos.center,
+                            zoom: pos.zoom,
+                            bearing: pos.bearing,
+                            pitch: pos.pitch
+                        });
+                    }
+                });
+
+                // Show initial message
+                showStatus('Map loaded! Add the Video Export control to get started', 'success');
+            });
+        });
+    </script>
+
+    <footer>
+        Built with ❤️, 🐱 & ☕ by <a href="https://mapstodon.space/@bperson" target="_blank" rel="noopener">Brice Person</a> •
+        Inspired by <a href="https://github.com/mourner" target="_blank" rel="noopener">@mourner</a> •
+        Powered by <a href="https://github.com/maplibre/maplibre-gl-js" target="_blank" rel="noopener">MapLibre GL JS</a> •
+        <a href="https://github.com/bjperson/maplibre-gl-video-export" target="_blank" rel="noopener">Source Code</a>
+    </footer>
+</body>
+</html>
