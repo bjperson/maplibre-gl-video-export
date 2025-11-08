@@ -55,7 +55,7 @@
 ### Via CDN
 
 ```html
-<script src="https://unpkg.com/maplibre-gl-video-export@latest/dist/maplibre-gl-video-export.js"></script>
+<script src="https://unpkg.com/maplibre-gl-video-export@latest/dist/maplibre-gl-video-export/maplibre-gl-video-export.js"></script>
 ```
 
 > **Note:** For production, you can pin to a specific version like `@0.1.0` instead of `@latest` to avoid unexpected updates.
@@ -136,7 +136,7 @@ map.addControl(videoExport);
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <script src="https://unpkg.com/maplibre-gl/dist/maplibre-gl.js"></script>
-    <script src="https://unpkg.com/maplibre-gl-video-export@latest/dist/maplibre-gl-video-export.js"></script>
+    <script src="https://unpkg.com/maplibre-gl-video-export@latest/dist/maplibre-gl-video-export/maplibre-gl-video-export.js"></script>
     <link href="https://unpkg.com/maplibre-gl/dist/maplibre-gl.css" rel="stylesheet" />
 </head>
 <body>
