@@ -6620,7 +6620,47 @@ class VideoExportControl {
     // Create encoder for the selected format
     let encoder = null;
     try {
-      encoder = await this._loadEncoderForFormat(width, height, this.options.fps, bitrate);
+      // Try loading encoder for selected format
+      try {
+        encoder = await this._loadEncoderForFormat(width, height, this.options.fps, bitrate);
+      } catch (encoderError) {
+        // Check if it's a CSP error when trying to load MP4
+        if (this.options.format === 'mp4' && (encoderError.name === 'EvalError' || encoderError.message.includes('CSP'))) {
+          console.warn('⚠️ MP4 encoder blocked by Content Security Policy (CSP)');
+          console.warn('   This often happens on GitHub Pages or other static hosts with strict CSP');
+          console.warn('   Falling back to WebM VP9...');
+
+          // Show user-friendly warning
+          this._updateStatus('MP4 blocked by CSP - using WebM VP9', 'warning');
+          await new Promise(resolve => setTimeout(resolve, 2000)); // Show warning for 2s
+
+          // Fallback to WebM VP9
+          this.options.format = 'webm-vp9';
+          try {
+            encoder = await this._loadEncoderForFormat(width, height, this.options.fps, bitrate);
+          } catch (vp9Error) {
+            // VP9 also failed, fallback to VP8
+            console.warn('⚠️ WebM VP9 encoder failed, falling back to VP8...');
+            this._updateStatus('VP9 failed - using VP8', 'warning');
+            await new Promise(resolve => setTimeout(resolve, 2000));
+
+            this.options.format = 'webm-vp8';
+            encoder = await this._loadEncoderForFormat(width, height, this.options.fps, bitrate);
+          }
+        } else if (this.options.format === 'webm-vp9') {
+          // VP9 failed, fallback to VP8
+          console.warn('⚠️ WebM VP9 encoder failed, falling back to VP8...');
+          this._updateStatus('VP9 failed - using VP8', 'warning');
+          await new Promise(resolve => setTimeout(resolve, 2000));
+
+          this.options.format = 'webm-vp8';
+          encoder = await this._loadEncoderForFormat(width, height, this.options.fps, bitrate);
+        } else {
+          // Other error, rethrow
+          throw encoderError;
+        }
+      }
+
       this._encoder = encoder; // Store for cleanup if needed
 
       // Setup capture

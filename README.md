@@ -1,7 +1,7 @@
 # MapLibre GL Video Export Plugin
 
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](LICENSE)
-[![npm version](https://badge.fury.io/js/maplibre-gl-video-export.svg)](https://www.npmjs.com/package/maplibre-gl-video-export)
+[![npm version](https://img.shields.io/npm/v/maplibre-gl-video-export?color=green&logo=npm)](https://www.npmjs.com/package/maplibre-gl-video-export)
 [![MapLibre GL JS](https://img.shields.io/badge/MapLibre%20GL%20JS-v5.11.0+-blue)](https://github.com/maplibre/maplibre-gl-js)
 
 [![Watch Demo Video](demo/preview.jpg)](https://www.ideeslibres.org/maplibre-gl-video-export-demo/demo.webm)

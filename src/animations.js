@@ -669,8 +669,6 @@ function calculateTerrainAwareZoomAtPoint(map, center, pitch = 60) {
     Math.log2(elevationKm + 1) * 2 * pitchFactor + safetyMargin
   );
 
-  console.log(`🏔️ Terrain aware: ${maxElevation.toFixed(0)}m elevation, pitch ${pitch}° (×${viewDistanceFactor.toFixed(1)} view distance) → min zoom ${terrainAwareZoom.toFixed(1)} (sampled ${samplePoints.length} points)`);
-
   return terrainAwareZoom;
 }
 
@@ -705,7 +703,6 @@ async function terrainAwareEaseTo(map, options, checkAbort) {
 
     // Ensure we don't go below safe zoom
     if (options.zoom !== undefined && options.zoom < terrainAwareZoom) {
-      console.log(`⚠️ Terrain collision risk: adjusted zoom ${options.zoom.toFixed(1)} → ${terrainAwareZoom.toFixed(1)}`);
       options.zoom = terrainAwareZoom;
     }
   }
@@ -734,7 +731,6 @@ async function terrainAwareFlyTo(map, options, checkAbort) {
 
     // Ensure we don't go below safe zoom
     if (options.zoom !== undefined && options.zoom < terrainAwareZoom) {
-      console.log(`⚠️ Terrain collision risk: adjusted zoom ${options.zoom.toFixed(1)} → ${terrainAwareZoom.toFixed(1)}`);
       options.zoom = terrainAwareZoom;
     }
   }
