@@ -1,6 +1,6 @@
 {
   "name": "maplibre-gl-video-export",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Video export plugin for MapLibre GL JS",
   "type": "module",
   "main": "src/index.js",
