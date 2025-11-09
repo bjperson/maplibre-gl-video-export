@@ -274,6 +274,28 @@ export class AnimationConstraints {
   }
 
   /**
+   * Calculate terrain-aware path with minimum zoom for each point
+   * Combines geographic safety (bounds) with terrain safety (elevation)
+   *
+   * @param {Object} map - MapLibre map instance
+   * @param {Array|Object} fromCenter - Starting center point
+   * @param {Array|Object} toCenter - Ending center point
+   * @param {number} pitch - Camera pitch angle (0-85°)
+   * @param {number} steps - Number of interpolation steps
+   * @returns {Array} Array of {center, minZoom} objects
+   */
+  calculateTerrainAwarePath(map, fromCenter, toCenter, pitch = 60, steps = 10) {
+    // Get geographic path (respects bounds)
+    const geoPath = this.calculateSafePath(fromCenter, toCenter, steps);
+
+    // Enrich with terrain-aware zoom for each point
+    return geoPath.map(point => ({
+      center: point,
+      minZoom: calculateTerrainAwareZoomAtPoint(map, point, pitch)
+    }));
+  }
+
+  /**
      * Check if the current view respects all constraints
      * @param {Object} map - MapLibre map instance
      * @returns {Object} {valid: boolean, issues: Array}
@@ -541,6 +563,22 @@ const rotatePanorama360 = async (map, duration, { checkAbort, degreesPerStep = 2
       }
     }
 
+    // Apply terrain-aware zoom adjustment if terrain is enabled and pitch is set
+    if (map.getTerrain && map.getTerrain()) {
+      // Use easToOptions.pitch if set, otherwise use current map pitch
+      const pitchToCheck = easToOptions.pitch !== undefined ? easToOptions.pitch : map.getPitch();
+
+      if (pitchToCheck > 0) {
+        const terrainAwareZoom = calculateTerrainAwareZoom(map, pitchToCheck);
+        const currentZoom = map.getZoom();
+
+        // Only adjust if we need more zoom for safety
+        if (currentZoom < terrainAwareZoom) {
+          easToOptions.zoom = terrainAwareZoom;
+        }
+      }
+    }
+
     map.easeTo(easToOptions);
     await map.once('moveend');
   }
@@ -550,6 +588,161 @@ const rotatePanorama360 = async (map, duration, { checkAbort, degreesPerStep = 2
 
 // Cache capabilities per map instance to avoid repeated detection
 const capabilitiesCache = new WeakMap();
+
+/**
+ * Calculate terrain-aware minimum zoom at a specific point
+ * Samples terrain elevation in a circular pattern around the given center
+ *
+ * @param {Object} map - MapLibre map instance
+ * @param {Object|Array} center - Center point {lat, lng} or [lng, lat]
+ * @param {number} pitch - Camera pitch angle (0-85°)
+ * @returns {number} Minimum safe zoom level to avoid terrain collisions
+ */
+function calculateTerrainAwareZoomAtPoint(map, center, pitch = 60) {
+  // Default safe zoom if no terrain
+  const defaultZoom = 3;
+
+  if (!map.getTerrain || !map.getTerrain()) {
+    return defaultZoom;
+  }
+
+  // Normalize center to {lat, lng} format
+  const centerPoint = Array.isArray(center)
+    ? { lng: center[0], lat: center[1] }
+    : center;
+
+  // Multi-radius circular sampling for robust 360° rotation coverage
+  // Use ABSOLUTE distance in degrees (not dependent on zoom level)
+  // At centerPoint.lat ≈ 45°, 1° ≈ 111km, so 0.01° ≈ 1.1km
+
+  // Adaptive sampling distance based on pitch: higher pitch = see farther = sample farther
+  // At 0° pitch (top-down): sample nearby (0.01° ≈ 1.1km at lat 45°)
+  // At 60° pitch: sample medium distance (0.07° ≈ 7.8km at lat 45°)
+  // At 85° pitch (nearly horizontal): sample very far (0.10° ≈ 11km at lat 45°)
+  const baseDistanceDegrees = 0.01; // Base distance in degrees (doubled from 0.005)
+  const viewDistanceFactor = 1 + (pitch / 85) * 9; // 1x at 0°, up to 10x at 85°
+
+  // 4 radii × 16 directions + center = 65 sample points
+  const baseRadii = [0.25, 0.5, 0.85, 1.3]; // Multipliers for base distance (added 4th radius)
+  const radii = baseRadii.map(r => r * baseDistanceDegrees * viewDistanceFactor);
+  const directions = 16; // Sample every 22.5° for finer 360° coverage
+  const samplePoints = [centerPoint]; // Start with center
+
+  // Sample in circles around the center
+  for (const radius of radii) {
+    for (let i = 0; i < directions; i++) {
+      const angle = (i / directions) * 2 * Math.PI; // 0°, 45°, 90°, ..., 315°
+      const lat = centerPoint.lat + radius * Math.sin(angle);
+      const lng = centerPoint.lng + radius * Math.cos(angle);
+      samplePoints.push({ lat, lng });
+    }
+  }
+
+  // Find maximum elevation among all sample points
+  let maxElevation = 0;
+  for (const point of samplePoints) {
+    const elevation = map.queryTerrainElevation(point);
+    if (elevation !== null && elevation > maxElevation) {
+      maxElevation = elevation;
+    }
+  }
+
+  if (maxElevation <= 0) {
+    return defaultZoom;
+  }
+
+  // Calculate safe zoom based on terrain elevation and camera pitch
+  // Higher pitch = need more clearance (camera looks more horizontal)
+  const elevationKm = maxElevation / 1000;
+
+  // Pitch factor: quadratic formula for exponential protection
+  // 0° = 1.0 (top-down), 30° = 1.13, 60° = 1.62, 75° = 2.58, 85° = 4.0
+  // Formula: 1 + (pitch / 85)² * 3
+  const pitchFactor = 1 + Math.pow(pitch / 85, 2) * 3;
+
+  // Safety margin (added to zoom level): 4.0 for extra terrain clearance
+  const safetyMargin = 3;
+
+  // Final calculation: log scale for elevation + pitch adjustment + safety
+  const terrainAwareZoom = Math.max(
+    defaultZoom,
+    Math.log2(elevationKm + 1) * 2 * pitchFactor + safetyMargin
+  );
+
+  console.log(`🏔️ Terrain aware: ${maxElevation.toFixed(0)}m elevation, pitch ${pitch}° (×${viewDistanceFactor.toFixed(1)} view distance) → min zoom ${terrainAwareZoom.toFixed(1)} (sampled ${samplePoints.length} points)`);
+
+  return terrainAwareZoom;
+}
+
+/**
+ * Calculate terrain-aware minimum zoom for 360° rotations at current map center
+ * Wrapper around calculateTerrainAwareZoomAtPoint using map.getCenter()
+ *
+ * @param {Object} map - MapLibre map instance
+ * @param {number} pitch - Camera pitch angle (0-85°)
+ * @returns {number} Minimum safe zoom level to avoid terrain collisions
+ */
+function calculateTerrainAwareZoom(map, pitch = 60) {
+  return calculateTerrainAwareZoomAtPoint(map, map.getCenter(), pitch);
+}
+
+/**
+ * Terrain-aware easeTo wrapper
+ * Automatically adjusts zoom level to avoid terrain collisions
+ *
+ * @param {Object} map - MapLibre map instance
+ * @param {Object} options - easeTo options (center, zoom, pitch, bearing, duration, etc.)
+ * @param {Function|null} checkAbort - Optional abort check function
+ * @returns {Promise} Resolves when movement completes
+ */
+async function terrainAwareEaseTo(map, options, checkAbort) {
+  // If terrain is enabled and we have a pitch, check for terrain safety
+  if (map.getTerrain && map.getTerrain() && options.pitch > 0) {
+    const pitch = options.pitch || 0;
+
+    // Calculate safe zoom based on terrain elevation
+    const terrainAwareZoom = calculateTerrainAwareZoom(map, pitch);
+
+    // Ensure we don't go below safe zoom
+    if (options.zoom !== undefined && options.zoom < terrainAwareZoom) {
+      console.log(`⚠️ Terrain collision risk: adjusted zoom ${options.zoom.toFixed(1)} → ${terrainAwareZoom.toFixed(1)}`);
+      options.zoom = terrainAwareZoom;
+    }
+  }
+
+  map.easeTo({ ...options, essential: true });
+  await map.once('moveend');
+  if (checkAbort) checkAbort();
+}
+
+/**
+ * Terrain-aware flyTo wrapper
+ * Automatically adjusts zoom level to avoid terrain collisions
+ *
+ * @param {Object} map - MapLibre map instance
+ * @param {Object} options - flyTo options (center, zoom, pitch, bearing, duration, etc.)
+ * @param {Function|null} checkAbort - Optional abort check function
+ * @returns {Promise} Resolves when movement completes
+ */
+async function terrainAwareFlyTo(map, options, checkAbort) {
+  // If terrain is enabled and we have a pitch, check for terrain safety
+  if (map.getTerrain && map.getTerrain() && options.pitch > 0) {
+    const pitch = options.pitch || 0;
+
+    // Calculate safe zoom based on terrain elevation
+    const terrainAwareZoom = calculateTerrainAwareZoom(map, pitch);
+
+    // Ensure we don't go below safe zoom
+    if (options.zoom !== undefined && options.zoom < terrainAwareZoom) {
+      console.log(`⚠️ Terrain collision risk: adjusted zoom ${options.zoom.toFixed(1)} → ${terrainAwareZoom.toFixed(1)}`);
+      options.zoom = terrainAwareZoom;
+    }
+  }
+
+  map.flyTo({ ...options, essential: true });
+  await map.once('moveend');
+  if (checkAbort) checkAbort();
+}
 
 export class AnimationDirector {
   constructor(map) {
@@ -570,7 +763,9 @@ export class AnimationDirector {
 
     const caps = {
       // Visual features
-      hasTerrain: false,
+      hasTerrainSource: false, // Terrain source (raster-dem) is available
+      hasTerrain: false,       // Terrain is currently enabled on the map
+      terrainSourceId: null,   // ID of the terrain source (if available)
       hasHillshade: false,
       has3DBuildings: false,
       hasRasterLayers: false,
@@ -610,10 +805,11 @@ export class AnimationDirector {
     const style = this.map.getStyle();
     const sources = style?.sources || {};
 
-    // Check for terrain support (raster-dem source)
-    Object.values(sources).forEach(source => {
+    // Check for terrain source (raster-dem) availability
+    Object.entries(sources).forEach(([sourceId, source]) => {
       if (source.type === 'raster-dem') {
-        caps.hasTerrain = true;
+        caps.hasTerrainSource = true;
+        caps.terrainSourceId = sourceId;
       }
 
       // Get max zoom from sources
@@ -621,6 +817,11 @@ export class AnimationDirector {
         caps.maxZoomData = source.maxzoom;
       }
     });
+
+    // Check if terrain is currently enabled on the map
+    if (this.map.getTerrain && this.map.getTerrain()) {
+      caps.hasTerrain = true;
+    }
 
     // Check for glyphs (fonts)
     if (style?.glyphs) {
@@ -828,8 +1029,8 @@ export class AnimationDirector {
       [sw.lng, ne.lat]
     );
 
-    // If we have terrain, try to find high points
-    if (this.capabilities.hasTerrain) {
+    // If we have terrain source, try to find high points
+    if (this.capabilities.hasTerrainSource) {
       // Sample points to find elevation variations
       const samples = 5;
       for (let i = 0; i < samples; i++) {
@@ -936,10 +1137,7 @@ export class AnimationDirector {
 
       // Enable terrain if not already
       if (!this.map.getTerrain()) {
-        const sources = this.map.getStyle()?.sources || {};
-        const terrainSource = Object.keys(sources).find(s =>
-          sources[s].type === 'raster-dem'
-        );
+        const terrainSource = this.capabilities.terrainSourceId;
 
         if (terrainSource) {
           this.map.setTerrain({
@@ -977,15 +1175,12 @@ export class AnimationDirector {
       const { updateStatus, checkAbort } = control;
       updateStatus('🏢 City flythrough...');
 
-      // Tilt for dramatic effect
-      this.map.easeTo({
+      // Tilt for dramatic effect (terrain-aware)
+      await terrainAwareEaseTo(this.map, {
         pitch: 60,
         zoom: this.map.getZoom() + 1,
-        duration: duration * 0.3,
-        essential: true
-      });
-      await this.map.once('moveend');
-      checkAbort();
+        duration: duration * 0.3
+      }, checkAbort);
 
       // Sweep through the city
       this.map.easeTo({
@@ -1027,16 +1222,13 @@ export class AnimationDirector {
       const stepDuration = duration / path.length;
 
       for (let i = 0; i < path.length; i++) {
-        this.map.flyTo({
+        await terrainAwareFlyTo(this.map, {
           center: path[i],
           zoom: this.map.getZoom() + (i % 2 ? 0.5 : -0.5),
           bearing: i * 45,
           pitch: 20 + (i * 10),
-          duration: stepDuration,
-          essential: true
-        });
-        await this.map.once('moveend');
-        checkAbort();
+          duration: stepDuration
+        }, checkAbort);
       }
     };
   }
@@ -1053,15 +1245,12 @@ export class AnimationDirector {
       // @ts-ignore - checkAbort is the only required parameter, others have defaults
       await rotatePanorama360(this.map, duration * 0.6, { checkAbort });
 
-      // Tilt shift effect
-      this.map.easeTo({
+      // Tilt shift effect (terrain-aware)
+      await terrainAwareEaseTo(this.map, {
         pitch: 45,
         zoom: this.map.getZoom() + 1,
-        duration: duration * 0.2,
-        essential: true
-      });
-      await this.map.once('moveend');
-      checkAbort();
+        duration: duration * 0.2
+      }, checkAbort);
 
       this.map.easeTo({
         pitch: 0,
@@ -1089,17 +1278,14 @@ export class AnimationDirector {
         pitch: 0
       };
 
-      // Dramatic pullback
-      this.map.flyTo({
+      // Dramatic pullback (terrain-aware)
+      await terrainAwareFlyTo(this.map, {
         ...initialState,
         zoom: initialState.zoom - 2,
         pitch: 30,
         bearing: -30,
-        duration: duration * 0.7,
-        essential: true
-      });
-      await this.map.once('moveend');
-      checkAbort();
+        duration: duration * 0.7
+      }, checkAbort);
 
       // Final position
       this.map.easeTo({
@@ -1744,54 +1930,13 @@ export const PresetAnimations = {
     const initialZoom = map.getZoom();
     const initialPitch = map.getPitch();
 
-    // Terrain-aware zoom calculation
-    // If 3D terrain is loaded, adjust zoom to avoid mountain collisions
-    let terrainSafeZoom = 3; // Default minimum zoom
-
-    if (map.getTerrain && map.getTerrain()) {
-      // Sample terrain elevation at multiple points around the view
-      // This prevents collisions during 360° rotations over mountains
-      const center = map.getCenter();
-      const bounds = map.getBounds();
-      const latSpan = bounds.getNorth() - bounds.getSouth();
-      const lngSpan = bounds.getEast() - bounds.getWest();
-
-      // Sample 9 points in a grid (center + 8 around it)
-      const samplePoints = [
-        center, // Center
-        { lng: center.lng, lat: center.lat + latSpan * 0.3 }, // North
-        { lng: center.lng, lat: center.lat - latSpan * 0.3 }, // South
-        { lng: center.lng + lngSpan * 0.3, lat: center.lat }, // East
-        { lng: center.lng - lngSpan * 0.3, lat: center.lat }, // West
-        { lng: center.lng + lngSpan * 0.25, lat: center.lat + latSpan * 0.25 }, // NE
-        { lng: center.lng - lngSpan * 0.25, lat: center.lat + latSpan * 0.25 }, // NW
-        { lng: center.lng + lngSpan * 0.25, lat: center.lat - latSpan * 0.25 }, // SE
-        { lng: center.lng - lngSpan * 0.25, lat: center.lat - latSpan * 0.25 } // SW
-      ];
-
-      // Find maximum elevation among all sample points
-      let maxElevation = 0;
-      for (const point of samplePoints) {
-        const elevation = map.queryTerrainElevation(point);
-        if (elevation !== null && elevation > maxElevation) {
-          maxElevation = elevation;
-        }
-      }
-
-      if (maxElevation > 0) {
-        // Heuristic: Higher elevation needs higher zoom level to stay above terrain
-        // At pitch 75°, we need more clearance
-        // Rough formula: elevation in meters → minimum zoom adjustment
-        const elevationKm = maxElevation / 1000;
-        const safetyMargin = 2.0; // Increased safety margin (was 1.5)
-        terrainSafeZoom = Math.max(3, Math.log2(elevationKm + 1) * 2 + safetyMargin);
-        console.log(`🏔️ Terrain detected: max elevation ${maxElevation.toFixed(0)}m → safe zoom ${terrainSafeZoom.toFixed(1)}`);
-      }
-    }
+    // Terrain-aware zoom calculation with robust circular sampling
+    // Samples 25 points in concentric circles to handle 360° rotations safely
+    const terrainAwareZoom = calculateTerrainAwareZoom(map, 75);
 
     // Phase 1 (15%): Vertical zoom out (keep current pitch)
     updateStatus('⬆️ Rising...');
-    const zoomOutLevel = Math.max(initialZoom - 4, terrainSafeZoom);
+    const zoomOutLevel = Math.max(initialZoom - 4, terrainAwareZoom);
     map.easeTo({
       zoom: zoomOutLevel,
       duration: duration * 0.15,
