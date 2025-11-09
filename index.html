@@ -49,8 +49,7 @@
           rel="stylesheet" />
 
     <!-- Video Export Plugin -->
-    <script src="assets/js/maplibre-gl-video-export.min.js"></script>
-    <!-- <script src="https://unpkg.com/maplibre-gl-video-export@latest/dist/maplibre-gl-video-export/maplibre-gl-video-export.min.js"></script> -->
+    <script src="https://unpkg.com/maplibre-gl-video-export@latest/dist/maplibre-gl-video-export/maplibre-gl-video-export.min.js"></script>
 
     <style>
         * {
@@ -1047,7 +1046,7 @@
                 layers.forEach(layer => {
                     // Hide background layer to show satellite
                     if (layer.type === 'background') {
-                        map.setPaintProperty(layer.id, 'background-opacity', 0);
+                        map.setLayoutProperty(layer.id, 'visibility', 'none');
                         return;
                     }
 
@@ -1065,15 +1064,9 @@
                     }
 
                     // Hide everything else (roads, water, buildings, etc.) but keep them in the style
-                    if (layer.type === 'fill') {
-                        map.setPaintProperty(layer.id, 'fill-opacity', 0);
-                    } else if (layer.type === 'line') {
-                        map.setPaintProperty(layer.id, 'line-opacity', 0);
-                    } else if (layer.type === 'fill-extrusion') {
-                        map.setPaintProperty(layer.id, 'fill-extrusion-opacity', 0);
-                    } else if (layer.type === 'circle') {
-                        map.setPaintProperty(layer.id, 'circle-opacity', 0);
-                    } else if (layer.type === 'symbol' && !layer.id.includes('label')) {
+                    // Using visibility: 'none' is much faster than opacity: 0 because layers aren't rendered at all
+                    if (layer.type === 'fill' || layer.type === 'line' || layer.type === 'fill-extrusion' ||
+                        layer.type === 'circle' || (layer.type === 'symbol' && !layer.id.includes('label'))) {
                         map.setLayoutProperty(layer.id, 'visibility', 'none');
                     }
                 });
