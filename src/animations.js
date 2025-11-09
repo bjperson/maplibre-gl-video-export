@@ -1050,16 +1050,8 @@ export class AnimationDirector {
       updateStatus('🎬 Cinematic view...');
 
       // Orbit around center
-      const startBearing = this.map.getBearing();
-
-      this.map.easeTo({
-        bearing: startBearing + 360,
-        duration: duration * 0.6,
-        essential: true,
-        easing: t => t * (2 - t) // Smooth easing
-      });
-      await this.map.once('moveend');
-      checkAbort();
+      // @ts-ignore - checkAbort is the only required parameter, others have defaults
+      await rotatePanorama360(this.map, duration * 0.6, { checkAbort });
 
       // Tilt shift effect
       this.map.easeTo({
@@ -1392,16 +1384,9 @@ export const PresetAnimations = {
     }
 
     updateStatus('🔄 360° orbit...');
-    const startBearing = map.getBearing();
 
-    map.easeTo({
-      bearing: startBearing + 360,
-      duration,
-      essential: true,
-      easing: t => t // Linear
-    });
-    await map.once('moveend');
-    checkAbort();
+    // @ts-ignore - checkAbort is the only required parameter, others have defaults
+    await rotatePanorama360(map, duration, { checkAbort });
   },
 
   /**
@@ -1570,14 +1555,8 @@ export const PresetAnimations = {
 
     // 3. 360° rotation to show all around
     updateStatus('🔄 Scanning surroundings...');
-    map.easeTo({
-      bearing: 360,
-      duration: duration * 0.25,
-      essential: true,
-      easing: t => t // Linear rotation
-    });
-    await map.once('moveend');
-    checkAbort();
+    // @ts-ignore - checkAbort is the only required parameter, others have defaults
+    await rotatePanorama360(map, duration * 0.25, { checkAbort });
 
     // 4. Closer view of immediate vicinity
     updateStatus('🔍 Examining nearby area...');
