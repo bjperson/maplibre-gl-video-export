@@ -70,11 +70,11 @@ const isValidCoordinate = (coord) => {
 };
 
 /**
- * Cleanup map2 (helper map) and associated debug layers
+ * Cleanup helper map (map2) and associated visualization layers
  * @param {Object} options - Options object containing map2, div2, etc.
- * @param {Object} map - Main map instance for removing debug layers
+ * @param {Object} map - Main map instance for removing visualization layers
  */
-const cleanupMap2AndDebugLayer = (options, map) => {
+const cleanupHelperMap = (options, map) => {
   // Remove helper map
   if (options.map2) {
     try { options.map2.remove(); } catch (e) {}
@@ -860,7 +860,6 @@ export class AnimationDirector {
     // Detect capabilities from vector tile source-layers
     // Supports: OpenMapTiles (https://openmaptiles.org/schema/)
     //           Mapbox Streets v8+ (https://docs.mapbox.com/data/tilesets/reference/mapbox-streets-v8/)
-    console.log('🗺️ Found source-layers:', Array.from(sourceLayers));
 
     // === TRANSPORTATION (Roads & Railways) ===
     // OpenMapTiles: 'transportation' contains BOTH roads and railways (differentiated by class)
@@ -952,8 +951,6 @@ export class AnimationDirector {
       caps.style = 'standard';
     }
 
-    console.log('🔍 Detected capabilities:', caps);
-
     // Store in cache
     capabilitiesCache.set(this.map, caps);
 
@@ -996,8 +993,6 @@ export class AnimationDirector {
       // Wait for tiles to load and index
       // This is critical - without this delay, queries may return empty
       await new Promise(resolve => setTimeout(resolve, 200));
-
-      console.log(`[HelperMap] Positioned map2 with bbox: [${minLng.toFixed(6)}, ${minLat.toFixed(6)}] to [${maxLng.toFixed(6)}, ${maxLat.toFixed(6)}]`);
     } catch (error) {
       console.error('[HelperMap] Failed to position helper map:', error);
     }
@@ -1052,7 +1047,6 @@ export class AnimationDirector {
       setup: null, // No setup needed
       animation: async (map, control) => {
         const { updateStatus, checkAbort } = control;
-        console.log('🎬 Creating adaptive animation for', duration, 'ms');
 
         const animations = [];
 
@@ -1357,13 +1351,6 @@ function _extractMinimalStyle(map, forceDetect = false) {
       }
     });
 
-    console.log(`[HelperMap] Created minimal style with ${Object.keys(minimalSources).length} vector source(s):`, Object.keys(minimalSources));
-    console.log('[HelperMap] Available features:', {
-      roads: caps.vectorSources.roads.sourceLayer || 'none',
-      railways: caps.vectorSources.railways.sourceLayer || 'none',
-      waterways: caps.vectorSources.waterways.sourceLayer || 'none'
-    });
-
     // Create minimal invisible layers to force MapLibre to load features
     // Without layers, querySourceFeatures returns nothing even if sources are defined!
     const minimalLayers = [];
@@ -1411,8 +1398,6 @@ function _extractMinimalStyle(map, forceDetect = false) {
       });
     }
 
-    console.log(`[HelperMap] Created ${minimalLayers.length} invisible layer(s) to force feature loading`);
-
     const minimalStyle = {
       version: 8,
       sources: minimalSources,
@@ -1421,8 +1406,6 @@ function _extractMinimalStyle(map, forceDetect = false) {
       sprite: style.sprite,
       id: style.id || 'helper-map'
     };
-
-    console.log('[HelperMap] Minimal style.json:', minimalStyle);
 
     return {
       vectorSources: caps.vectorSources, // Return all source/layer mappings
@@ -1449,9 +1432,6 @@ function _extractMinimalStyle(map, forceDetect = false) {
 function _findNearbyRoadInCardinalDirections(fromPoint, currentBearing, usedSegmentIds, roads2, options = {}) {
   const { prefer = null, searchRadius = 0.002 } = options;
   const preferredClasses = prefer ? (Array.isArray(prefer) ? prefer : [prefer]) : [];
-
-  console.log('[RoadSearch] Searching nearby roads in cardinal directions...' +
-        (preferredClasses.length ? ` (prefer: ${preferredClasses.join(', ')})` : ''));
 
   // Search in 8 cardinal directions (N, NE, E, SE, S, SW, W, NW)
   const searchDirections = CARDINAL_DIRECTIONS_8.map(d => d.angle);
@@ -1500,7 +1480,6 @@ function _findNearbyRoadInCardinalDirections(fromPoint, currentBearing, usedSegm
       const roadClass = road.properties?.class || 'unknown';
       if (preferredClasses.length > 0 && preferredClasses.includes(roadClass)) {
         score *= 0.5; // 50% bonus for preferred road types
-        console.log(`[RoadSearch]   ✨ Found preferred ${roadClass} at ${direction}° (bonus applied)`);
       }
 
       if (score < bestScore) {
@@ -1523,19 +1502,7 @@ function _findNearbyRoadInCardinalDirections(fromPoint, currentBearing, usedSegm
   // Using actualDist which is calculated from fromPoint
   const maxJumpDistanceKm = 0.250; // 250m maximum (allows sparse rural roads)
   if (bestRoad && bestRoad.distance > maxJumpDistanceKm) {
-    console.log(`[RoadSearch] ⚠️ Found road but too far (${(bestRoad.distance * 1000).toFixed(0)}m > 250m) - rejecting to avoid huge jump`);
     bestRoad = null;
-  }
-
-  if (bestRoad) {
-    const roadClass = bestRoad.road.properties?.class || 'unknown';
-    const isPreferred = preferredClasses.includes(roadClass);
-    // bestRoad.distance is in km, convert to meters for display
-    console.log(`[RoadSearch] 🔍 Found ${isPreferred ? '✨ preferred ' : ''}${roadClass} at ${bestRoad.direction}° ` +
-            `(${(bestRoad.distance * 1000).toFixed(0)}m away, bearing Δ${bestRoad.bearingDiff.toFixed(1)}°)`);
-  } else {
-    // searchRadiusKm is in km, convert to meters for display
-    console.log(`[RoadSearch] No roads found within ${(searchRadiusKm * 1000).toFixed(0)}m in any direction`);
   }
 
   return bestRoad;
@@ -2483,8 +2450,6 @@ export const PresetAnimations = {
                         `;
             document.body.appendChild(div2);
 
-            console.log('styleInfo', styleInfo);
-
             // Create helper map with minimal style
             map2 = new maplibregl.Map({
               container: div2,
@@ -2499,7 +2464,6 @@ export const PresetAnimations = {
 
             // Wait for helper map to load
             await new Promise(resolve => map2.once('load', resolve));
-            console.log('[HelperMap] Helper map ready for queries');
           } else {
             console.warn('[HelperMap] Could not extract style, will use main map');
           }
@@ -2528,7 +2492,6 @@ export const PresetAnimations = {
         // Check if source exists
         const source = map.getSource(sourceId2);
         if (!source) {
-          console.log(`[Setup] No vector source '${sourceId2}' found - skipping path positioning`);
           return;
         }
 
@@ -2546,10 +2509,7 @@ export const PresetAnimations = {
           ]
         });
 
-        console.log(`[Setup] Found ${availableRoads2 ? availableRoads2.length : 0} road segments nearby`);
-
         if (!availableRoads2 || availableRoads2.length === 0) {
-          console.log('[Setup] No roads found');
           return;
         }
 
@@ -2613,7 +2573,6 @@ export const PresetAnimations = {
             }
           }
           if (!closestRoad) {
-            console.log('[Setup] No valid road found');
             return;
           }
           closestIntersection = {
@@ -2625,13 +2584,9 @@ export const PresetAnimations = {
         }
 
         const closestRoad = closestIntersection.road;
-        const detectedClass = closestIntersection.roadClass;
-
-        console.log(`[Setup] Found road by intersection: ${detectedClass} at ${(closestIntersection.distance * 111000).toFixed(1)}m (direction: ${closestIntersection.direction})`);
 
         // Keep ALL road classes for fluid exploration in dense areas
         // This allows transitions between minor → primary → tertiary etc.
-        console.log(`[Setup] Keeping all ${availableRoads2.length} road segments (all classes) for fluid exploration`);
 
         let roadCoords = closestRoad.geometry.coordinates;
 
@@ -2685,8 +2640,6 @@ export const PresetAnimations = {
         // Wait for map to be completely idle (all rendering finished)
         await map.once('idle');
         checkAbort();
-
-        console.log('[Setup] Initial position set, ready to record');
       },
       animation: async (map, control) => {
         // This is the actual animation - runs AFTER recording starts
@@ -2715,13 +2668,8 @@ export const PresetAnimations = {
     const duration = options.duration || 20000;
     updateStatus('🛣️ Finding nearest road...');
 
-    // Debug: Check state of options.map2
-    console.log('[HelperMap] Debug - options.map2:', options.map2);
-    console.log('[HelperMap] Debug - typeof options.map2:', typeof options.map2);
-
     // Create helper map if not already created (for Explore mode)
     if (!options.map2) {
-      console.log('[HelperMap] Creating invisible query map...');
       try {
         const styleInfo = _extractMinimalStyle(map);
 
@@ -2772,10 +2720,8 @@ export const PresetAnimations = {
           });
 
           await new Promise(resolve => options.map2.once('load', resolve));
-          console.log('[HelperMap] Helper map ready for queries');
 
           // Create GeoJSON visualization layer
-          console.log('[Debug] Creating visualization layer for followed segments...');
           try {
             const debugSourceId = 'drone-followed-segments';
             const debugLayerId = 'drone-followed-segments-layer';
@@ -2812,8 +2758,6 @@ export const PresetAnimations = {
                 'line-opacity': 0.8
               }
             });
-
-            console.log('[Debug] Visualization layer created successfully');
           } catch (layerError) {
             console.warn('[Debug] Could not create visualization layer:', layerError);
           }
@@ -2846,7 +2790,7 @@ export const PresetAnimations = {
     if (!source) {
       updateStatus('⚠️ No vector source - using terrain following');
       // Cleanup helper map and debug layer before fallback
-      cleanupMap2AndDebugLayer(options, map);
+      cleanupHelperMap(options, map);
       await PresetAnimations.terrainFollowing(map, { updateStatus, checkAbort }, options);
       return;
     }
@@ -2863,7 +2807,7 @@ export const PresetAnimations = {
     if (!roads2 || roads2.length === 0) {
       updateStatus('⚠️ No roads found - using terrain following');
       // Cleanup helper map and debug layer before fallback
-      cleanupMap2AndDebugLayer(options, map);
+      cleanupHelperMap(options, map);
       await PresetAnimations.terrainFollowing(map, { updateStatus, checkAbort }, options);
       return;
     }
@@ -2892,7 +2836,7 @@ export const PresetAnimations = {
     if (!closestRoad) {
       updateStatus('⚠️ No valid road found - using terrain following');
       // Cleanup helper map and debug layer before fallback
-      cleanupMap2AndDebugLayer(options, map);
+      cleanupHelperMap(options, map);
       await PresetAnimations.terrainFollowing(map, { updateStatus, checkAbort }, options);
       return;
     }
@@ -2916,9 +2860,6 @@ export const PresetAnimations = {
       // Reverse the coordinates to follow the road in the user's intended direction
       if (Math.abs(bearingDiff) > 90) {
         roadCoords = [...roadCoords].reverse();
-        console.log(`[RoadFollow] Reversed road direction to match user's view (bearingDiff: ${bearingDiff.toFixed(1)}°)`);
-      } else {
-        console.log(`[RoadFollow] Following road in natural direction (bearingDiff: ${bearingDiff.toFixed(1)}°)`);
       }
     }
 
@@ -2959,10 +2900,6 @@ export const PresetAnimations = {
 
       // Connection threshold: back to 50m to avoid jumping between roads
       const connectionThreshold = 0.0005;
-
-      console.log(`[RoadChain] Searching for next segment from ${currentRoadClass}${currentRoadName ? ' (' + currentRoadName + ')' : ''}${currentRoadRef ? ' [' + currentRoadRef + ']' : ''}, bearing: ${currentBearing.toFixed(1)}°`);
-      console.log(`[RoadChain] Total segments in cache: ${currentRoads2.length}`);
-      console.log(`[RoadChain] Connection threshold: ${(connectionThreshold * 111000).toFixed(0)}m`);
 
       for (const road of currentRoads2) {
         if (!road.geometry || !road.geometry.coordinates) {
@@ -3067,11 +3004,6 @@ export const PresetAnimations = {
 
         candidateCount++;
 
-        // Log every candidate segment for debugging
-        const candidateLabel = roadRef ? `[${roadRef}]` : (roadName || roadClass);
-        const priorityLabel = isSameRef ? 'P1-SameRef' : (isSameName ? 'P2-SameName' : (isSameClass ? 'P3-SameClass' : 'P4-Different'));
-        console.log(`[RoadChain]   Candidate #${candidateCount}: ${candidateLabel} (${priorityLabel}) bearing Δ${bearingDiff.toFixed(1)}°, dist ${(distance * 111000).toFixed(1)}m, score ${score.toFixed(1)}`);
-
         if (score < bestScore) {
           bestScore = score;
           bestNextSegment = {
@@ -3087,8 +3019,6 @@ export const PresetAnimations = {
         }
       }
 
-      console.log(`[RoadChain] Evaluated ${candidateCount} candidate segments, best score: ${bestScore === Infinity ? 'none found' : bestScore.toFixed(1)}`);
-
       // If no segment found and we have a helper map, try adjusting zoom
       if (!bestNextSegment && options.map2 && vehicleProfile.searchRadius) {
         const currentZoom2 = options.map2.getZoom();
@@ -3096,8 +3026,6 @@ export const PresetAnimations = {
         const zoomsToTry = currentZoom2 === 18 ? [16, 17] : []; // Try wider views
 
         for (const zoomLevel of zoomsToTry) {
-          console.log(`[RoadChain] No segment found at zoom ${currentZoom2.toFixed(1)}, retrying at zoom ${zoomLevel}...`);
-
           // Adjust helper map zoom
           options.map2.setZoom(zoomLevel);
           await new Promise(resolve => setTimeout(resolve, 200)); // Wait for tiles to load
@@ -3107,8 +3035,6 @@ export const PresetAnimations = {
             sourceLayer: sourceLayer2,
             filter: ROAD_QUERY_FILTER
           });
-
-          console.log(`[RoadChain] Retry found ${retryRoads2.length} segments at zoom ${zoomLevel}`);
 
           // Re-run scoring logic (simplified - just find ANY connected segment)
           for (const road of retryRoads2) {
@@ -3143,7 +3069,6 @@ export const PresetAnimations = {
                 const bearingDiff = Math.abs(normalizeBearingDiff(nextSegmentBearing - currentBearing));
 
                 if (bearingDiff <= 150) { // Not a U-turn
-                  console.log(`[RoadChain] ✅ Found segment at zoom ${zoomLevel}: bearingDiff ${bearingDiff.toFixed(1)}°`);
                   bestNextSegment = {
                     road,
                     coords: effectiveCoords,
@@ -3176,8 +3101,6 @@ export const PresetAnimations = {
       return bestNextSegment;
     };
 
-    console.log(`[RoadChain] Starting with ${roadClass}: ${roadCoords.length} points`);
-
     updateStatus(`${vehicleProfile.icon} Following ${roadClass} (${roadCoords.length} points)...`);
 
     // Set pitch from vehicle profile
@@ -3190,8 +3113,6 @@ export const PresetAnimations = {
     // Define realistic speed in km/h (will be used to calculate duration based on distance)
     const vehicleSpeedKmh = vehicleProfile.speedKmh || 30; // Default: 30 km/h
     const maxSegments = 10000; // Very high limit just to prevent infinite loops in case of bugs
-
-    console.log(`[RoadFollow] Vehicle speed: ${vehicleSpeedKmh} km/h`);
 
     // NOTE: Initial positioning is now done in the setup phase (before recording starts)
     // This function only handles the actual road following animation
@@ -3236,18 +3157,14 @@ export const PresetAnimations = {
         // During recording, time is frozen and the recording system manages duration
         if (!maplibregl.isTimeFrozen || !maplibregl.isTimeFrozen()) {
           if (elapsed >= duration) {
-            console.log(`[RoadChain] Animation complete: ${(elapsed / 1000).toFixed(1)}s, ${totalPointsVisited} points, ${segmentCount} segments`);
             break;
           }
         }
 
         // Check if we've reached the end of the current segment
         if (currentSegmentIndex >= currentSegmentCoords.length) {
-          console.log(`[RoadChain] End of segment #${segmentCount} reached (index ${currentSegmentIndex} >= ${currentSegmentCoords.length} points)`);
-
           // Try to find the next connecting segment
           if (segmentCount >= maxSegments) {
-            console.log(`[RoadChain] Max segments (${maxSegments}) reached`);
             break;
           }
 
@@ -3262,11 +3179,8 @@ export const PresetAnimations = {
             break;
           }
 
-          console.log(`[RoadChain] Searching for segment #${segmentCount + 1} from point [${lastPoint[0].toFixed(6)}, ${lastPoint[1].toFixed(6)}]`);
-
           // Segments are loaded dynamically in findNextSegment
           let nextSegment = await findNextSegment(lastPoint, secondLastPoint, usedSegmentIds);
-          console.log(`[RoadChain] Search result: ${nextSegment ? 'FOUND' : 'NOT FOUND'}`);
 
           // If STILL no connected segment, search in cardinal directions for nearby roads
           if (!nextSegment) {
@@ -3291,17 +3205,12 @@ export const PresetAnimations = {
             );
 
             if (nextSegment) {
-              console.log('[RoadChain] Cardinal search: FOUND road in direction');
               updateStatus(`${vehicleProfile.icon} Jumping to nearby road...`);
-            } else {
-              console.log('[RoadChain] Cardinal search: NOT FOUND');
             }
           }
 
           // If STILL no segment found AND in Explore mode, continue forward to find next road
           if (!nextSegment && vehicleProfile.supportsExploration) {
-            console.log('[RoadSearch] Explore mode: searching forward for next road...');
-
             const currentBearing = calculateBearing(
               secondLastPoint[0], secondLastPoint[1],
               lastPoint[0], lastPoint[1]
@@ -3331,8 +3240,6 @@ export const PresetAnimations = {
               );
 
               if (foundRoad) {
-                console.log(`[RoadSearch] ✅ Found road after ${step} steps (${(step * 50).toFixed(0)}m forward)`);
-
                 // Create intermediate points for smooth transition
                 const intermediatePoints = [];
                 for (let i = 1; i <= step; i++) {
@@ -3397,7 +3304,6 @@ export const PresetAnimations = {
               currentSegmentCoords = vehicleProfile.smoothPath
                 ? resamplePathCatmullRom(nextSegment.coords, 0.01) // Smooth curves
                 : resamplePath(nextSegment.coords, 0.01); // Linear (10m spacing)
-              console.log(`[RoadChain] Short segment - keeping all ${nextSegment.coords.length} points for bearing calc`);
             }
             // Store road properties for continuity tracking
             currentSegmentCoords.roadClass = nextSegment.road.properties?.class;
@@ -3415,11 +3321,6 @@ export const PresetAnimations = {
 
             // nextSegment.distance is in km (from calculateDistance), convert to meters
             const distanceM = nextSegment.distance ? (nextSegment.distance * 1000).toFixed(1) : '0.0';
-            console.log(`[RoadChain] ✅ Segment #${segmentCount}: ${roadIdentity} ` +
-                        `(${nextSegment.coords.length} pts, ${nextSegment.reversed ? 'reversed' : 'forward'}, ` +
-                        `bearing Δ${nextSegment.bearingDiff.toFixed(1)}°, ${distanceM}m)` +
-                        (nextSegment.score ? `, score: ${nextSegment.score.toFixed(1)}` : ''));
-            console.log(`[RoadChain] After processing: ${currentSegmentCoords.length} points remaining for animation`);
 
             // Add segment to visualization
             if (options.debugFeatures) {
@@ -3456,7 +3357,6 @@ export const PresetAnimations = {
                     type: 'FeatureCollection',
                     features: options.debugFeatures
                   });
-                  console.log(`[Debug] Added segment #${segmentCount} to visualization (total: ${options.debugFeatures.length} segments)`);
                 }
               } catch (error) {
                 console.error('[Debug] Failed to update visualization:', error);
@@ -3548,36 +3448,8 @@ export const PresetAnimations = {
 
       updateStatus(`✅ ${vehicleProfile.name} complete!`);
     } finally {
-      // Log final GeoJSON for debugging/export (always executed, even on abort)
-      if (options.debugFeatures && options.debugFeatures.length > 0) {
-        const finalGeoJSON = {
-          type: 'FeatureCollection',
-          features: options.debugFeatures
-        };
-        console.log('[Debug] Final followed path GeoJSON (' + options.debugFeatures.length + ' segments):');
-        console.log(JSON.stringify(finalGeoJSON, null, 2));
-      }
-
       // Cleanup helper map if it exists
-      console.log('[HelperMap] Cleaning up helper map...');
-      cleanupMap2AndDebugLayer(options, map);
-
-      // Cleanup debug visualization layer
-      console.log('[Debug] Cleaning up visualization layer...');
-      try {
-        const debugLayerId = 'drone-followed-segments-layer';
-        const debugSourceId = 'drone-followed-segments';
-
-        if (map.getLayer(debugLayerId)) {
-          map.removeLayer(debugLayerId);
-        }
-        if (map.getSource(debugSourceId)) {
-          map.removeSource(debugSourceId);
-        }
-        console.log('[Debug] Visualization layer cleaned up');
-      } catch (error) {
-        console.error('[Debug] Error cleaning up visualization layer:', error);
-      }
+      cleanupHelperMap(options, map);
     }
   },
 
@@ -3849,7 +3721,6 @@ export const PresetAnimations = {
       // @ts-ignore
       if (!maplibregl.isTimeFrozen || !maplibregl.isTimeFrozen()) {
         if (elapsed >= duration) {
-          console.log(`[FreeFlight] Cruise complete: ${(elapsed / 1000).toFixed(1)}s`);
           break;
         }
       }
