@@ -947,9 +947,11 @@ class VideoExportControl {
                     margin-top: 12px;
                     border: 1px solid rgba(0, 0, 0, 0.1);
                     font-size: 12px;
-                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+                    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Ubuntu, 'Noto Sans', Roboto, Oxygen-Sans, Cantarell, 'Helvetica Neue', Arial, sans-serif;
                     line-height: 1.5;
                     color: #333;
+                    -webkit-font-smoothing: antialiased;
+                    -moz-osx-font-smoothing: grayscale;
                 }
                 .maplibregl-ctrl-progress-widget .progress-status {
                     color: #555;
@@ -1071,6 +1073,11 @@ class VideoExportControl {
                     transition: opacity 0.3s ease-out, transform 0.3s ease-out;
                     pointer-events: none;
                     height: auto;
+                    /* Better font rendering across all platforms */
+                    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Ubuntu, 'Noto Sans', Roboto, Oxygen-Sans, Cantarell, 'Helvetica Neue', Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol';
+                    -webkit-font-smoothing: antialiased;
+                    -moz-osx-font-smoothing: grayscale;
+                    text-rendering: optimizeLegibility;
                 }
 
                 .maplibre-gl-video-export-panel[data-visible="true"] {
@@ -1310,10 +1317,6 @@ class VideoExportControl {
                     text-align: center;
                     color: #666;
                 }
-                .maplibre-gl-video-export-ctrl > .maplibregl-ctrl-group {
-                    border-bottom-right-radius: unset;
-                    border-bottom-left-radius: unset;
-                }
                 .maplibre-gl-video-export-panel .status.recording {
                     background: #ffebee;
                     color: #c62828;
@@ -1533,10 +1536,20 @@ class VideoExportControl {
                         background: rgba(255, 255, 255, 0.3);
                     }
                 }
+
+                /* Spinner animation for encoding phase */
+                @keyframes spin {
+                    0% { transform: rotate(0deg); }
+                    100% { transform: rotate(360deg); }
+                }
             </style>
 
-            <!-- Reset button -->
-            <div style="margin-bottom: 15px; text-align: right;">
+            <!-- Reset button and encoding spinner -->
+            <div style="margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">
+                <div id="ve-encoding-spinner" style="display: none; font-size: 11px; color: #666;">
+                    <span style="display: inline-block; width: 14px; height: 14px; border: 2px solid #ddd; border-top-color: #666; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 6px;"></span>
+                    <span>Finalizing video...</span>
+                </div>
                 <a href="#" id="ve-reset-defaults" style="font-size: 11px; color: #666; text-decoration: none; padding: 4px 8px; border: 1px solid #ddd; border-radius: 3px; display: inline-block;">↻ Reset to Defaults</a>
             </div>
 
@@ -4866,6 +4879,18 @@ class VideoExportControl {
     status.className = 'status ' + className;
   }
 
+  _showEncodingSpinner() {
+    if (!this._panel) return;
+    const spinner = this._panel.querySelector('#ve-encoding-spinner');
+    if (spinner) spinner.style.display = 'flex';
+  }
+
+  _hideEncodingSpinner() {
+    if (!this._panel) return;
+    const spinner = this._panel.querySelector('#ve-encoding-spinner');
+    if (spinner) spinner.style.display = 'none';
+  }
+
   _estimateFileSize(bitrate, durationMs, format) {
     // Calculate base size in MB
     // bitrate is in kbps, duration in ms
@@ -6869,6 +6894,7 @@ class VideoExportControl {
 
       // Encode
       this._updateStatus('Encoding video...', 'recording');
+      this._showEncodingSpinner(); // Show spinner during encoding phase
       // Update progress widget to show encoding status
       const statusSpan = this._progressWidget?.querySelector('#ve-progress-status');
       if (statusSpan) statusSpan.textContent = 'Encoding';
@@ -6924,6 +6950,9 @@ class VideoExportControl {
       this._updateStatus(`✅ Complete! ${sizeMB} MB`, 'success');
       this.options.onComplete(blob, frameCount);
     } finally {
+      // Always hide encoding spinner
+      this._hideEncodingSpinner();
+
       // Always cleanup encoder
       if (encoder) {
         if (encoder.destroy) {
