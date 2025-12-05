@@ -73,7 +73,7 @@ Files (~275 KB total) will be auto-detected if present in `vendor/mp4/`.
 ## Licenses
 
 - **webm-wasm** (VP8): Apache 2.0 - https://github.com/GoogleChromeLabs/webm-wasm
-- **mediabunny** (VP9): MPL-2.0 - https://github.com/Yahweasel/mediabunny
+- **mediabunny** (VP9): MPL-2.0 - https://github.com/Vanilagy/mediabunny
 - **mp4-h264**: MIT (⚠️ H.264 codec may require separate patent licensing for commercial use)
 
 See main README for usage instructions.

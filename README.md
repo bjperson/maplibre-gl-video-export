@@ -308,7 +308,7 @@ BSD-3-Clause
 This plugin was inspired by the original time control idea from [@mourner](https://github.com/mourner) (Vladimir Agafonkin), creator of Leaflet, core contributor to Mapbox GL JS.
 
 **Built with:**
-- [mediabunny](https://mediabunny.dev) by Yahweasel - JavaScript media toolkit for VP9/WebM encoding and muxing (MPL-2.0)
+- [mediabunny](https://mediabunny.dev) by [Vanilagy](https://github.com/Vanilagy) - JavaScript media toolkit for VP9/WebM encoding and muxing (MPL-2.0)
 - [webm-wasm](https://github.com/GoogleChromeLabs/webm-wasm) by Google Chrome Labs - WebAssembly VP8/WebM video encoding (royalty-free)
 - mp4-h264 package - WebAssembly H.264 video encoding (MIT License, see H.264 patent notice above)
 - [wasm-feature-detect](https://github.com/GoogleChromeLabs/wasm-feature-detect) by Google Chrome Labs - SIMD capability detection

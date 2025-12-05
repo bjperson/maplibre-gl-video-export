@@ -25,9 +25,9 @@ This project was inspired by the original time control idea from Vladimir Agafon
 
 This software makes use of the following open-source libraries:
 
-- mediabunny by Yahweasel (MPL-2.0 License)
+- mediabunny by Vanilagy (MPL-2.0 License)
   JavaScript media toolkit for reading, writing, and converting media files
-  https://github.com/Yahweasel/mediabunny - https://mediabunny.dev
+  https://github.com/Vanilagy/mediabunny - https://mediabunny.dev
 
 - wasm-feature-detect by Google Chrome Labs (Apache-2.0 License)
   https://github.com/GoogleChromeLabs/wasm-feature-detect
