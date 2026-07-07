@@ -529,6 +529,8 @@ class VideoExportControl {
     /** @type {any[]} */
     this._waypointMarkers = []; // Array of maplibregl.Marker instances (draggable)
     this._isRecording = false; // Flag to prevent marker recreation during recording
+    /** @type {any} */
+    this._savedFades = null; // Fade durations saved during export, restored afterwards
     this._savedWaypointsVisibility = undefined; // Saved state during recording
     this._waypointsLayerId = 've-waypoints-recording-layer'; // MapLibre layer ID for waypoints
     this._waypointsSourceId = 've-waypoints-recording-source'; // MapLibre source ID for waypoints
@@ -6556,6 +6558,61 @@ class VideoExportControl {
     }
   }
 
+  /**
+   * Zero out tile/label fade durations for the duration of the export so tiles and
+   * labels appear crisp on the exact frame they load, instead of cross-fading over
+   * ~300ms of virtual time as the capture loop advances setNow(). Most visible with
+   * raster/satellite layers (raster cross-fade). Values are restored by
+   * _restoreMapFades() in the recording finally block.
+   */
+  _freezeMapFades() {
+    this._savedFades = null;
+    if (!this._map) return;
+    const saved = { raster: [], symbolFadeDuration: undefined };
+    try {
+      // Raster tile cross-fade: public, per raster layer.
+      const layers = (this._map.getStyle() && this._map.getStyle().layers) || [];
+      for (const layer of layers) {
+        if (layer.type === 'raster') {
+          saved.raster.push({
+            id: layer.id,
+            value: this._map.getPaintProperty(layer.id, 'raster-fade-duration')
+          });
+          this._map.setPaintProperty(layer.id, 'raster-fade-duration', 0);
+        }
+      }
+      // Symbol/label collision fade: no public setter, so mutate the private field
+      // (declared in maplibre's type defs). Guarded in case it disappears upstream.
+      if (typeof this._map._fadeDuration === 'number') {
+        saved.symbolFadeDuration = this._map._fadeDuration;
+        this._map._fadeDuration = 0;
+      }
+      this._savedFades = saved;
+    } catch (error) {
+      console.warn('[Recording] Could not freeze map fades:', error);
+    }
+  }
+
+  /**
+   * Restore the fade durations saved by _freezeMapFades().
+   */
+  _restoreMapFades() {
+    const saved = this._savedFades;
+    this._savedFades = null;
+    if (!saved || !this._map) return;
+    try {
+      for (const entry of saved.raster) {
+        // A saved undefined resets the layer to its default fade (setPaintProperty).
+        this._map.setPaintProperty(entry.id, 'raster-fade-duration', entry.value);
+      }
+      if (saved.symbolFadeDuration !== undefined && typeof this._map._fadeDuration === 'number') {
+        this._map._fadeDuration = saved.symbolFadeDuration;
+      }
+    } catch (error) {
+      console.warn('[Recording] Could not restore map fades:', error);
+    }
+  }
+
   async _doRecording() {
     if (!this._panel) return;
     // Start real-time performance measurement
@@ -6740,6 +6797,10 @@ class VideoExportControl {
         });
         console.log('✓ Setup phase complete');
       }
+
+      // Make tiles/labels appear crisp on their exact load frame (avoids raster
+      // cross-fade playing out over virtual time during capture).
+      this._freezeMapFades();
 
       // Freeze time AFTER setup
       maplibregl.setNow(virtualTime);
@@ -6984,6 +7045,9 @@ class VideoExportControl {
       // Clear recording flag to allow marker updates again
       this._isRecording = false;
       console.log('[Recording] 🔓 Recording flag CLEARED - marker updates enabled');
+
+      // Restore tile/label fade durations changed for the export
+      this._restoreMapFades();
 
       // Remove temporary WebGL layer (no longer needed)
       this._removeWaypointsWebGLLayer();
