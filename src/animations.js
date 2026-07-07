@@ -18,31 +18,80 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 // ============================================================================
 
 /**
+ * Road attributes to exclude from vehicle animations
+ * These features are completely filtered out during road queries
+ */
+const ROAD_EXCLUSION_FILTER = [
+  ['!=', ['get', 'tunnel'], 'yes'],
+  ['!=', ['get', 'tunnel'], 'building_passage']
+];
+
+/**
  * Standard filter for querying road features from vector tiles
  * Used for vehicle animations that follow roads (car, drone, helicopter, etc.)
+ * Excludes pedestrian paths (path, track, footway, pedestrian, steps) and tunnels
  */
 const ROAD_QUERY_FILTER = [
   'all',
   ['==', ['geometry-type'], 'LineString'],
   ['in', ['get', 'class'], ['literal', [
     'motorway', 'trunk', 'primary', 'secondary', 'tertiary',
-    'minor', 'service', 'track', 'path'
-  ]]]
+    'minor', 'service'
+  ]]],
+  ...ROAD_EXCLUSION_FILTER
 ];
+
+/**
+ * Low-priority road classes that should be avoided for vehicle animations
+ * These are pedestrian/non-vehicle paths that receive heavy scoring penalties
+ */
+const LOW_PRIORITY_ROAD_CLASSES = ['path', 'track', 'footway', 'pedestrian', 'steps'];
+
+/**
+ * Apply road class hierarchy bonus/penalty to a score
+ * Prefers major roads (motorway, primary) over minor roads and service roads
+ * @param {number} score - Base score to modify
+ * @param {string} roadClass - Road class from OSM (motorway, primary, secondary, tertiary, minor, service, etc.)
+ * @returns {number} Modified score with road class hierarchy applied
+ */
+const applyRoadClassHierarchy = (score, roadClass) => {
+  if (LOW_PRIORITY_ROAD_CLASSES.includes(roadClass)) {
+    // Heavy penalty for pedestrian/low-priority roads
+    return score * 10; // 10x penalty - strongly avoid starting on pedestrian paths
+  } else if (['motorway', 'trunk', 'primary'].includes(roadClass)) {
+    return score * 0.15; // 85% bonus - very strongly prefer major highways
+  } else if (['secondary', 'tertiary'].includes(roadClass)) {
+    return score * 0.25; // 75% bonus - strongly prefer main roads
+  }
+  // minor, service: no bonus/penalty (baseline)
+  return score;
+};
+
+/**
+ * Normalize angle from 0-360 range to MapLibre's -180 to 180 range
+ * @param {number} angle - Angle in 0-360 degrees
+ * @returns {number} Angle in -180 to 180 degrees
+ */
+const normalizeToMapLibreBearing = (angle) => {
+  // Convert 0-360 to -180 to 180
+  if (angle > 180) return angle - 360;
+  return angle;
+};
 
 /**
  * 8 cardinal directions for road searching and ray casting
  * Used for finding roads in all compass directions from a point
+ * Angles in MapLibre format (-180 to 180)
  */
 const CARDINAL_DIRECTIONS_8 = [
-  { angle: 0, name: 'N' }, // North
-  { angle: 45, name: 'NE' }, // Northeast
-  { angle: 90, name: 'E' }, // East
-  { angle: 135, name: 'SE' }, // Southeast
-  { angle: 180, name: 'S' }, // South
-  { angle: 225, name: 'SW' }, // Southwest
-  { angle: 270, name: 'W' }, // West
-  { angle: 315, name: 'NW' } // Northwest
+  { angle: 0, name: 'N' }, // North (0°)
+  { angle: 45, name: 'NE' }, // Northeast (45°)
+  { angle: 90, name: 'E' }, // East (90°)
+  { angle: 135, name: 'SE' }, // Southeast (135°)
+  { angle: -180, name: 'S' }, // South (-180°/180°)
+  { angle: -135, name: 'SW' }, // Southwest (-135°)
+  { angle: -90, name: 'W' }, // West (-90°)
+  { angle: -45, name: 'NW' } // Northwest (-45°)
 ];
 
 /**
@@ -58,15 +107,109 @@ const normalizeBearingDiff = (diff) => {
 };
 
 /**
+ * Calculate the closest point on a line segment to a given point
+ * @param {Array} point - [lng, lat] of the point
+ * @param {Array} segmentStart - [lng, lat] of segment start
+ * @param {Array} segmentEnd - [lng, lat] of segment end
+ * @returns {Object} { closestPoint: [lng, lat], distance: meters }
+ */
+const closestPointOnSegment = (point, segmentStart, segmentEnd) => {
+  const [px, py] = point;
+  const [x1, y1] = segmentStart;
+  const [x2, y2] = segmentEnd;
+
+  // Vector from segment start to end
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+
+  // If segment is a point, return distance to that point
+  if (dx === 0 && dy === 0) {
+    const dist = Math.sqrt((px - x1) ** 2 + (py - y1) ** 2) * 111000; // Convert to meters
+    return { closestPoint: [x1, y1], distance: dist };
+  }
+
+  // Project point onto line segment (parametric t ∈ [0,1])
+  const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)));
+
+  // Closest point on segment
+  const closestX = x1 + t * dx;
+  const closestY = y1 + t * dy;
+
+  // Distance in meters
+  const distDegrees = Math.sqrt((px - closestX) ** 2 + (py - closestY) ** 2);
+  const distMeters = distDegrees * 111000;
+
+  return { closestPoint: [closestX, closestY], distance: distMeters };
+};
+
+/**
+ * Generate unique key for a road segment based on its coordinates
+ * This allows us to track specific portions of a road rather than entire roads
+ * @param {Object} road - Road feature with id and geometry
+ * @returns {string|null} Unique key for this segment, or null if invalid
+ */
+const getSegmentKey = (road) => {
+  if (!road || !road.geometry || !road.geometry.coordinates || road.geometry.coordinates.length < 1) {
+    return null;
+  }
+  const coords = road.geometry.coordinates;
+
+  // Handle MultiLineString: coordinates = [[[lng,lat],...], [[lng,lat],...]]
+  // vs LineString: coordinates = [[lng,lat], [lng,lat], ...]
+  let firstCoord, lastCoord;
+
+  if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
+    // MultiLineString: get first point of first segment and last point of last segment
+    const firstSegment = coords[0];
+    const lastSegment = coords[coords.length - 1];
+    firstCoord = firstSegment[0];
+    lastCoord = lastSegment[lastSegment.length - 1];
+  } else {
+    // LineString: get first and last point directly
+    firstCoord = coords[0];
+    lastCoord = coords[coords.length - 1];
+  }
+
+  // Validate coordinates are valid [lng, lat] arrays with numbers
+  if (!isValidCoordinate(firstCoord) || !isValidCoordinate(lastCoord)) {
+    console.warn('[getSegmentKey] Invalid coordinates for road', road.id, 'type:', road.geometry.type);
+    return null;
+  }
+
+  return `${road.id}_${firstCoord[0].toFixed(6)}_${firstCoord[1].toFixed(6)}_${lastCoord[0].toFixed(6)}_${lastCoord[1].toFixed(6)}`;
+};
+
+/**
  * Validate that a coordinate is a valid [lng, lat] array with numbers
  * @param {Array} coord - Coordinate to validate
  * @returns {boolean} True if coordinate is valid [number, number] array
  */
 const isValidCoordinate = (coord) => {
   return coord &&
-           Array.isArray(coord) &&
-           typeof coord[0] === 'number' &&
-           typeof coord[1] === 'number';
+    Array.isArray(coord) &&
+    typeof coord[0] === 'number' &&
+    typeof coord[1] === 'number';
+};
+
+/**
+ * Get flattened point array from road geometry (handles both LineString and MultiLineString)
+ * @param {Object} road - Road feature with geometry
+ * @returns {Array} Array of [lng, lat] points
+ */
+const getRoadPoints = (road) => {
+  if (!road || !road.geometry || !road.geometry.coordinates) {
+    return [];
+  }
+  const coords = road.geometry.coordinates;
+
+  // Check if MultiLineString: coordinates[0][0] is a point [lng, lat]
+  if (Array.isArray(coords[0]) && Array.isArray(coords[0][0]) && typeof coords[0][0][0] === 'number') {
+    // MultiLineString: flatten all segments into one array
+    return coords.flat();
+  }
+
+  // LineString: already flat
+  return coords;
 };
 
 /**
@@ -87,23 +230,23 @@ const cleanupHelperMap = (options, map) => {
 
   // Remove debug visualization layers
   try {
-    if (map.getLayer('drone-followed-segments-layer')) {
-      map.removeLayer('drone-followed-segments-layer');
+    if (map.getLayer('followed-segments-layer')) {
+      map.removeLayer('followed-segments-layer');
     }
-    if (map.getSource('drone-followed-segments')) {
-      map.removeSource('drone-followed-segments');
+    if (map.getSource('followed-segments')) {
+      map.removeSource('followed-segments');
     }
   } catch (e) {}
 };
 
 /**
  * Convert degrees to meters (at equator)
- * @param {number} degrees - Distance in degrees
- * @param {number} precision - Decimal places (default: 0)
- * @returns {string} Distance in meters as formatted string
+ * @param {number} degrees - Isotropic degree distance (√(dLng²+dLat²))
+ * @returns {number} Approximate distance in meters
+ * Note: uses the flat 111000 m/deg convention shared across this module; it is
+ * NOT corrected for cos(latitude) (see the flat-earth follow-up).
  */
-// eslint-disable-next-line no-unused-vars
-const degreesToMeters = (degrees, precision = 0) => (degrees * 111000).toFixed(precision);
+const degreesToMeters = (degrees) => degrees * 111000;
 
 /**
  * Calculate intersection distance between two line segments
@@ -760,8 +903,8 @@ export class AnimationDirector {
     const caps = {
       // Visual features
       hasTerrainSource: false, // Terrain source (raster-dem) is available
-      hasTerrain: false,       // Terrain is currently enabled on the map
-      terrainSourceId: null,   // ID of the terrain source (if available)
+      hasTerrain: false, // Terrain is currently enabled on the map
+      terrainSourceId: null, // ID of the terrain source (if available)
       hasHillshade: false,
       has3DBuildings: false,
       hasRasterLayers: false,
@@ -924,12 +1067,6 @@ export class AnimationDirector {
     // Mapbox Streets: 'landuse'
     if (sourceLayers.has('landuse') || sourceLayers.has('landcover')) {
       caps.hasLanduse = true;
-    }
-
-    // === BUILDINGS ===
-    // Both schemas: 'building'
-    if (sourceLayers.has('building')) {
-      // Already detected via fill-extrusion above
     }
 
     // Get bounds
@@ -1351,6 +1488,22 @@ function _extractMinimalStyle(map, forceDetect = false) {
       }
     });
 
+    // Also add terrain source if available (needed for terrain-aware altitude)
+    if (caps.terrainSourceId) {
+      const terrainSource = sources[caps.terrainSourceId];
+      if (terrainSource && terrainSource.type === 'raster-dem') {
+        minimalSources[caps.terrainSourceId] = {
+          type: terrainSource.type,
+          ...(terrainSource.tiles && { tiles: terrainSource.tiles }),
+          ...(terrainSource.url && { url: terrainSource.url }),
+          ...(terrainSource.encoding && { encoding: terrainSource.encoding }),
+          ...(terrainSource.minzoom !== undefined && { minzoom: terrainSource.minzoom }),
+          ...(terrainSource.maxzoom !== undefined && { maxzoom: terrainSource.maxzoom }),
+          ...(terrainSource.tileSize !== undefined && { tileSize: terrainSource.tileSize })
+        };
+      }
+    }
+
     // Create minimal invisible layers to force MapLibre to load features
     // Without layers, querySourceFeatures returns nothing even if sources are defined!
     const minimalLayers = [];
@@ -1427,82 +1580,199 @@ function _extractMinimalStyle(map, forceDetect = false) {
  * @param {Object} options - Search options
  * @param {string|Array} options.prefer - Road class(es) to prefer (e.g., 'motorway', ['motorway', 'trunk', 'primary'])
  * @param {number} options.searchRadius - Search radius in degrees (default: 0.002 ≈ 200m)
+ * @param {Object} options.currentRoad - Current road info for continuity bonus {id, name, ref, class}
  * @returns {Object|null} Best road found or null
  */
 function _findNearbyRoadInCardinalDirections(fromPoint, currentBearing, usedSegmentIds, roads2, options = {}) {
-  const { prefer = null, searchRadius = 0.002 } = options;
+  const { prefer = null, searchRadius = 0.002, currentRoad = null } = options;
   const preferredClasses = prefer ? (Array.isArray(prefer) ? prefer : [prefer]) : [];
 
-  // Search in 8 cardinal directions (N, NE, E, SE, S, SW, W, NW)
-  const searchDirections = CARDINAL_DIRECTIONS_8.map(d => d.angle);
+  console.log(`[CardinalSearch] Casting 360° circle with ${(searchRadius * 111000).toFixed(0)}m radius`);
+  console.log(`[CardinalSearch] Total roads in query: ${roads2.length}, Used segments: ${usedSegmentIds.size}`);
 
-  // Convert searchRadius from degrees to km for distance comparison
-  // At equator: 1 degree ≈ 111 km
-  const searchRadiusKm = searchRadius * 111;
+  // Calculate ray endpoints for all 8 cardinal directions
+  const rayEndpoints = [];
+  for (const dir of CARDINAL_DIRECTIONS_8) {
+    const radians = (dir.angle * Math.PI) / 180;
+    rayEndpoints.push({
+      name: dir.name,
+      angle: dir.angle,
+      point: [
+        fromPoint[0] + searchRadius * Math.sin(radians),
+        fromPoint[1] + searchRadius * Math.cos(radians)
+      ]
+    });
+  }
 
   let bestRoad = null;
   let bestScore = Infinity;
 
-  for (const direction of searchDirections) {
-    // Calculate search point in this direction
-    const radians = (direction * Math.PI) / 180;
-    const searchLng = fromPoint[0] + searchRadius * Math.sin(radians);
-    const searchLat = fromPoint[1] + searchRadius * Math.cos(radians);
+  // === PHASE 1: Cast radial rays from center ===
+  for (const endpoint of rayEndpoints) {
+    let rayIntersectionCount = 0;
 
-    // Find closest road to this search point
     for (const road of roads2) {
       if (!road.geometry || !road.geometry.coordinates) continue;
-      if (usedSegmentIds.has(road.id)) continue;
+      // Check if this specific segment portion has been used
+      const segmentKey = getSegmentKey(road);
+      if (segmentKey && usedSegmentIds.has(segmentKey)) continue;
 
-      const roadStart = road.geometry.coordinates[0];
-      const roadEnd = road.geometry.coordinates[road.geometry.coordinates.length - 1];
+      const coords = getRoadPoints(road); // Handle both LineString and MultiLineString
+      for (let i = 1; i < coords.length; i++) {
+        const roadSegStart = coords[i - 1];
+        const roadSegEnd = coords[i];
 
-      // Calculate distance from ACTUAL position (fromPoint), not from search point
-      // This gives us the real distance we'll jump
-      const distStartFromActual = calculateDistance(fromPoint[0], fromPoint[1], roadStart[0], roadStart[1]);
-      const distEndFromActual = calculateDistance(fromPoint[0], fromPoint[1], roadEnd[0], roadEnd[1]);
-      const actualDist = Math.min(distStartFromActual, distEndFromActual);
+        const dist = segmentIntersection(fromPoint, endpoint.point, roadSegStart, roadSegEnd);
 
-      // Also calculate distance from search point for scoring
-      const distStart = calculateDistance(searchLng, searchLat, roadStart[0], roadStart[1]);
-      const distEnd = calculateDistance(searchLng, searchLat, roadEnd[0], roadEnd[1]);
-      const minDist = Math.min(distStart, distEnd);
+        if (dist !== null) {
+          rayIntersectionCount++;
 
-      if (minDist > searchRadiusKm) continue; // Too far from search point
+          // Calculate bearing difference from current direction
+          const bearingDiff = Math.abs(normalizeBearingDiff(endpoint.angle - currentBearing));
 
-      // Prefer roads in forward direction
-      const bearingDiff = Math.abs(normalizeBearingDiff(direction - currentBearing));
+          // Base score: distance + bearing penalty (stronger weight for direction)
+          // bearingDiff: 0° = 1x, 90° = 2.5x, 180° = 4x (heavily penalize opposite direction)
+          let score = dist * (1 + bearingDiff / 60);
 
-      // Base score = distance + bearing penalty
-      let score = minDist + (bearingDiff / 180) * 0.001;
+          // PRIORITY 1: Same road continuity - HUGE bonus if same road
+          const roadId = road.id;
+          const roadName = road.properties?.name;
+          const roadRef = road.properties?.ref;
+          const isSameRoad = currentRoad && (
+            (currentRoad.id && roadId === currentRoad.id) ||
+            (currentRoad.name && roadName && roadName === currentRoad.name) ||
+            (currentRoad.ref && roadRef && roadRef === currentRoad.ref)
+          );
+          if (isSameRoad) {
+            score *= 0.1; // 90% bonus - strongly prefer staying on same road!
+            console.log(`[Continuity] Same road detected: ${roadName || roadRef || roadId} - bonus applied`);
+          }
 
-      // Bonus if this road class is preferred
-      const roadClass = road.properties?.class || 'unknown';
-      if (preferredClasses.length > 0 && preferredClasses.includes(roadClass)) {
-        score *= 0.5; // 50% bonus for preferred road types
+          // PRIORITY 2: Road class preference (balanced bonus to stay on same road type)
+          // Exclude pedestrian paths and tracks from class bonus (vehicles should prefer real roads)
+          const roadClass = road.properties?.class || 'unknown';
+          if (preferredClasses.length > 0 && preferredClasses.includes(roadClass) && !LOW_PRIORITY_ROAD_CLASSES.includes(roadClass)) {
+            score *= 0.5; // 50% bonus for same road class (balanced with direction)
+            console.log(`[ClassMatch] Same class detected: ${roadClass} - bonus applied`);
+          }
+
+          if (score < bestScore) {
+            bestScore = score;
+            // Determine which end is closer to intersection point
+            const roadStart = coords[0];
+            const roadEnd = coords[coords.length - 1];
+            const distStartFromPoint = calculateDistance(fromPoint[0], fromPoint[1], roadStart[0], roadStart[1]);
+            const distEndFromPoint = calculateDistance(fromPoint[0], fromPoint[1], roadEnd[0], roadEnd[1]);
+            const shouldReverse = distEndFromPoint < distStartFromPoint;
+
+            bestRoad = {
+              road,
+              coords: shouldReverse ? [...coords].reverse() : coords,
+              reversed: shouldReverse,
+              distance: dist,
+              direction: endpoint.name + '_RADIAL',
+              bearingDiff,
+              roadClass
+            };
+          }
+        }
       }
+    }
 
-      if (score < bestScore) {
-        bestScore = score;
-        const shouldReverse = distEndFromActual < distStartFromActual;
-        bestRoad = {
-          road,
-          coords: shouldReverse ? [...road.geometry.coordinates].reverse() : road.geometry.coordinates,
-          reversed: shouldReverse,
-          distance: actualDist, // Store ACTUAL distance from current position
-          direction,
-          bearingDiff
-        };
+    console.log(`[Ray ${endpoint.name}] ${endpoint.angle}° → ${rayIntersectionCount} intersections`);
+  }
+
+  // === PHASE 2: Cast arc segments connecting ray endpoints (full circle) ===
+  console.log('[CircleArc] Testing arc segments between endpoints...');
+  let arcIntersectionCount = 0;
+
+  for (let i = 0; i < rayEndpoints.length; i++) {
+    const arcStart = rayEndpoints[i].point;
+    const arcEnd = rayEndpoints[(i + 1) % rayEndpoints.length].point; // Wrap around to close circle
+
+    for (const road of roads2) {
+      if (!road.geometry || !road.geometry.coordinates) continue;
+      // Check if this specific segment portion has been used
+      const segmentKey = getSegmentKey(road);
+      if (segmentKey && usedSegmentIds.has(segmentKey)) continue;
+
+      const coords = getRoadPoints(road); // Handle both LineString and MultiLineString
+      for (let j = 1; j < coords.length; j++) {
+        const roadSegStart = coords[j - 1];
+        const roadSegEnd = coords[j];
+
+        const dist = segmentIntersection(arcStart, arcEnd, roadSegStart, roadSegEnd);
+
+        if (dist !== null) {
+          arcIntersectionCount++;
+
+          // For arc hits, use average bearing of the two endpoints
+          const avgAngle = (rayEndpoints[i].angle + rayEndpoints[(i + 1) % rayEndpoints.length].angle) / 2;
+          const bearingDiff = Math.abs(normalizeBearingDiff(avgAngle - currentBearing));
+
+          // Base score: distance + bearing penalty + small arc penalty
+          // bearingDiff: 0° = 1x, 90° = 2.5x, 180° = 4x
+          let score = dist * (1 + bearingDiff / 60) * 1.1; // 10% penalty for arc vs radial
+
+          // PRIORITY 1: Same road continuity - HUGE bonus if same road
+          const roadId = road.id;
+          const roadName = road.properties?.name;
+          const roadRef = road.properties?.ref;
+          const isSameRoad = currentRoad && (
+            (currentRoad.id && roadId === currentRoad.id) ||
+            (currentRoad.name && roadName && roadName === currentRoad.name) ||
+            (currentRoad.ref && roadRef && roadRef === currentRoad.ref)
+          );
+          if (isSameRoad) {
+            score *= 0.1; // 90% bonus - strongly prefer staying on same road!
+            console.log(`[Continuity] Same road detected (arc): ${roadName || roadRef || roadId} - bonus applied`);
+          }
+
+          // PRIORITY 2: Road class preference (balanced bonus to stay on same road type)
+          // Exclude pedestrian paths and tracks from class bonus (vehicles should prefer real roads)
+          const roadClass = road.properties?.class || 'unknown';
+          if (preferredClasses.length > 0 && preferredClasses.includes(roadClass) && !LOW_PRIORITY_ROAD_CLASSES.includes(roadClass)) {
+            score *= 0.5; // 50% bonus for same road class (balanced with direction)
+            console.log(`[ClassMatch] Same class detected: ${roadClass} - bonus applied`);
+          }
+
+          if (score < bestScore) {
+            bestScore = score;
+            const roadStart = coords[0];
+            const roadEnd = coords[coords.length - 1];
+            const distStartFromPoint = calculateDistance(fromPoint[0], fromPoint[1], roadStart[0], roadStart[1]);
+            const distEndFromPoint = calculateDistance(fromPoint[0], fromPoint[1], roadEnd[0], roadEnd[1]);
+            const shouldReverse = distEndFromPoint < distStartFromPoint;
+
+            bestRoad = {
+              road,
+              coords: shouldReverse ? [...coords].reverse() : coords,
+              reversed: shouldReverse,
+              distance: dist,
+              direction: `ARC_${rayEndpoints[i].name}_${rayEndpoints[(i + 1) % rayEndpoints.length].name}`,
+              bearingDiff,
+              roadClass
+            };
+          }
+        }
       }
     }
   }
 
-  // Safety check: reject roads that are too far away to avoid huge jumps
-  // Maximum 250m jump for road following (allows rural roads while preventing huge jumps)
-  // Using actualDist which is calculated from fromPoint
-  const maxJumpDistanceKm = 0.250; // 250m maximum (allows sparse rural roads)
-  if (bestRoad && bestRoad.distance > maxJumpDistanceKm) {
+  console.log(`[CircleArc] Found ${arcIntersectionCount} intersections on arc segments`);
+
+  // Safety check: reject roads that are too far away to avoid huge jumps.
+  // bestRoad.distance is an isotropic degree distance (from segmentIntersection).
+  const maxJumpDistanceMeters = 50; // 50m maximum for cardinal search
+  if (bestRoad && degreesToMeters(bestRoad.distance) > maxJumpDistanceMeters) {
+    console.log(`[CardinalSearch] Rejecting road at ${degreesToMeters(bestRoad.distance).toFixed(0)}m (> ${maxJumpDistanceMeters}m limit)`);
     bestRoad = null;
+  }
+
+  if (bestRoad) {
+    console.log(`[CardinalSearch] ✓ Found ${bestRoad.roadClass} via ${bestRoad.direction} at ${degreesToMeters(bestRoad.distance).toFixed(0)}m`);
+  } else {
+    console.log('[CardinalSearch] ✗ No roads found in 360° search');
   }
 
   return bestRoad;
@@ -2391,271 +2661,530 @@ export const PresetAnimations = {
   },
 
   /**
-     * Setup function for road following - returns { setup, animation }
-     * This allows setup (positioning) to run before recording starts
-     */
-  _followPathWithVehicleSetup: (map, control, options = {}, vehicleProfile) => {
-    // Default transport classes (roads) if not specified
-    const transportClasses = vehicleProfile.transportClasses || [
-      'motorway', 'trunk', 'primary', 'secondary', 'tertiary',
-      'minor', 'service', 'track', 'path'
-    ];
+   * Create an invisible helper map for querying vector tile features
+   * @param {Object} mainMap - The main MapLibre map instance
+   * @param {number} zoom - Zoom level for the helper map (default: 14)
+   * @param {boolean} includeDebugLayer - Whether to create debug visualization layer (default: false)
+   * @returns {Promise<Object>} Returns { map, div, sourceId, sourceLayer } or null on error
+   */
+  async _createHelperMap(mainMap, zoom = 14, includeDebugLayer = false) {
+    try {
+      const styleInfo = _extractMinimalStyle(mainMap);
 
-    // Variables shared between setup and animation phases
-    let map2 = null;
-    let div2 = null;
-    let sourceId2 = 'openmaptiles'; // Default fallback
-    let sourceLayer2 = 'transportation'; // Default fallback
-    const debugFeatures = []; // Track followed segments for visualization
+      if (!styleInfo) {
+        console.error('[HelperMap] Failed to extract style info from main map');
+        return null;
+      }
+
+      if (!styleInfo.vectorSources.roads.sourceId) {
+        console.error('[HelperMap] No roads source found in style');
+        console.error('[HelperMap] Available sources:', styleInfo.vectorSources);
+        return null;
+      }
+
+      // Remove any existing helper div
+      const existingDiv = document.getElementById('maplibre-query-helper');
+      if (existingDiv && existingDiv.parentNode) {
+        existingDiv.parentNode.removeChild(existingDiv);
+      }
+
+      // Create invisible div for helper map
+      const mainContainer = mainMap.getContainer();
+      const width = mainContainer.offsetWidth;
+      const height = mainContainer.offsetHeight;
+
+      const div = document.createElement('div');
+      div.id = 'maplibre-query-helper';
+      div.style.cssText = `
+        position: absolute;
+        top: -9999px;
+        left: -9999px;
+        width: ${width}px;
+        height: ${height}px;
+        visibility: hidden;
+        pointer-events: none;
+      `;
+      document.body.appendChild(div);
+
+      // Create helper map instance
+      const helperMap = new maplibregl.Map({
+        container: div,
+        style: styleInfo.style,
+        center: mainMap.getCenter(),
+        zoom,
+        bearing: mainMap.getBearing(),
+        pitch: 0,
+        preserveDrawingBuffer: false,
+        interactive: false
+      });
+
+      // Wait for helper map to load
+      await new Promise(resolve => helperMap.once('load', resolve));
+
+      // Create debug visualization layer if requested
+      if (includeDebugLayer) {
+        try {
+          const debugSourceId = 'followed-segments';
+          const debugLayerId = 'followed-segments-layer';
+
+          // Remove existing source/layer if any
+          if (mainMap.getLayer(debugLayerId)) {
+            mainMap.removeLayer(debugLayerId);
+          }
+          if (mainMap.getSource(debugSourceId)) {
+            mainMap.removeSource(debugSourceId);
+          }
+
+          // Add empty GeoJSON source
+          mainMap.addSource(debugSourceId, {
+            type: 'geojson',
+            data: {
+              type: 'FeatureCollection',
+              features: []
+            }
+          });
+
+          // Add line layer (magenta, 4px wide)
+          mainMap.addLayer({
+            id: debugLayerId,
+            type: 'line',
+            source: debugSourceId,
+            layout: {
+              'line-join': 'round',
+              'line-cap': 'round'
+            },
+            paint: {
+              'line-color': '#FF00FF', // Magenta
+              'line-width': 4,
+              'line-opacity': 0.8
+            }
+          });
+        } catch (layerError) {
+          console.warn('[Debug] Could not create visualization layer:', layerError);
+        }
+      }
+
+      return {
+        map: helperMap,
+        div,
+        sourceId: styleInfo.vectorSources.roads.sourceId,
+        sourceLayer: styleInfo.vectorSources.roads.sourceLayer
+      };
+    } catch (error) {
+      console.error('[HelperMap] Failed to create helper map:', error);
+      return null;
+    }
+  },
+
+  /**
+   * Find closest road using simple distance calculation with optional directional scoring
+   * @param {Array} roads - Array of road features to search
+   * @param {Object} center - Center point with lng, lat properties
+   * @param {number|null} userBearing - Optional user bearing to apply directional scoring
+   * @returns {Object|null} Closest road or null if none found
+   */
+  _findClosestRoadByDistance(roads, center, userBearing = null) {
+    let closestRoad = null;
+    let minScore = Infinity;
+    let minDistance = Infinity;
+    let bestAngleDiff = null;
+
+    for (const road of roads) {
+      if (!road.geometry || !road.geometry.coordinates) continue;
+
+      // Find closest point on this road
+      // Use getRoadPoints to handle MultiLineString
+      const roadPoints = getRoadPoints(road);
+      let roadMinDistance = Infinity;
+      let roadClosestPoint = null;
+
+      for (const coord of roadPoints) {
+        const [lng, lat] = coord;
+        const dx = lng - center.lng;
+        const dy = lat - center.lat;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        if (distance < roadMinDistance) {
+          roadMinDistance = distance;
+          roadClosestPoint = coord;
+        }
+      }
+
+      // Convert distance to meters for more readable scores
+      const roadMinDistanceMeters = roadMinDistance * 111000;
+
+      // Calculate score with directional penalty if userBearing provided
+      let score = roadMinDistanceMeters;
+      let angleDiff = null;
+
+      // Apply road class hierarchy (prefer major roads over minor/service roads)
+      const roadClass = road.properties?.class || 'unknown';
+      score = applyRoadClassHierarchy(score, roadClass);
+
+      if (userBearing !== null && roadClosestPoint) {
+        const dx = roadClosestPoint[0] - center.lng;
+        const dy = roadClosestPoint[1] - center.lat;
+        const bearingToRoad = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
+        const normalizedBearingToRoad = normalizeToMapLibreBearing(bearingToRoad);
+        const rawDiff = userBearing - normalizedBearingToRoad;
+        angleDiff = Math.abs(normalizeBearingDiff(rawDiff));
+
+        // Apply the directional penalty ON TOP of the class-hierarchy score
+        // (roads in front get no penalty, roads behind get a strong one).
+        let directionalPenalty;
+        if (angleDiff <= 60) {
+          directionalPenalty = 1.0; // Straight ahead
+        } else if (angleDiff <= 90) {
+          directionalPenalty = 2.0; // Slightly to the side
+        } else if (angleDiff <= 135) {
+          directionalPenalty = 5.0; // Very much to the side
+        } else {
+          directionalPenalty = 10.0; // Behind
+        }
+        score *= directionalPenalty;
+      }
+
+      if (score < minScore) {
+        minScore = score;
+        minDistance = roadMinDistance;
+        closestRoad = road;
+        bestAngleDiff = angleDiff;
+      }
+    }
+
+    if (!closestRoad) return null;
 
     return {
-      setup: async (map, control, { updateStatus, checkAbort }) => {
-        // This is the setup phase - runs BEFORE recording starts
-        // 1. Create helper map for queries (invisible, positioned ahead)
-        // 2. Find nearest path (road/rail/etc) at current position
-        // 3. Position camera at start
+      road: closestRoad,
+      distance: minDistance,
+      roadClass: closestRoad.properties?.class || 'unknown',
+      angleDiff: bestAngleDiff,
+      score: minScore
+    };
+  },
 
-        // Try to create helper map for better road queries
-        console.log('[HelperMap] Creating invisible query map...');
-        try {
-          // Extract minimal style from main map
-          const styleInfo = _extractMinimalStyle(map);
+  /**
+   * HMM-based road candidate scoring
+   * Uses Hidden Markov Model principles to score road candidates based on:
+   * - Emission probability: how well the GPS point matches the road (distance)
+   * - Transition probability: how likely is transitioning from previous road to this one
+   * @param {Array} candidates - Array of candidate road segments with distance/bearing info
+   * @param {Object} previousRoad - Previously selected road segment (or null if first point)
+   * @param {Array} trajectoryHistory - Array of last N GPS points with their selected roads
+   * @returns {Object} Best candidate with HMM score
+   */
+  _scoreRoadCandidatesHMM(candidates, previousRoad, trajectoryHistory = []) {
+    if (!candidates || candidates.length === 0) return null;
 
-          if (styleInfo && styleInfo.vectorSources.roads.sourceId) {
-            // Use roads source for vehicle navigation
-            sourceId2 = styleInfo.vectorSources.roads.sourceId;
-            sourceLayer2 = styleInfo.vectorSources.roads.sourceLayer;
+    let bestCandidate = null;
+    let bestScore = -Infinity; // Higher score is better for HMM
 
-            // Remove any existing helper div
-            const existingDiv = document.getElementById('maplibre-query-helper');
-            if (existingDiv && existingDiv.parentNode) {
-              existingDiv.parentNode.removeChild(existingDiv);
-            }
+    for (const candidate of candidates) {
+      // === EMISSION PROBABILITY ===
+      // P(observation | state) - how well does GPS point fit this road?
+      // Based on perpendicular distance to road (closer = higher probability)
+      // candidate.distance is an isotropic degree distance; convert to meters.
+      const distanceMeters = degreesToMeters(candidate.distance);
+      const maxDistanceMeters = 50; // 50m max reasonable GPS error
+      const emissionProb = Math.exp(-Math.pow(distanceMeters / maxDistanceMeters, 2));
 
-            // Create invisible div with SAME dimensions as main map
-            const mainContainer = map.getContainer();
-            const width = mainContainer.offsetWidth;
-            const height = mainContainer.offsetHeight;
+      // === TRANSITION PROBABILITY ===
+      // P(state_t | state_t-1) - how likely is this transition?
+      let transitionProb = 0.5; // Default neutral probability
 
-            div2 = document.createElement('div');
-            div2.id = 'maplibre-query-helper';
-            div2.style.cssText = `
-                            position: absolute;
-                            top: -9999px;
-                            left: -9999px;
-                            width: ${width}px;
-                            height: ${height}px;
-                            visibility: hidden;
-                            pointer-events: none;
-                        `;
-            document.body.appendChild(div2);
+      if (previousRoad) {
+        const isSameRoad = candidate.road.id === previousRoad.id;
+        const isSameRoadRef = candidate.roadRef && candidate.roadRef === previousRoad.roadRef;
+        const isSameRoadName = candidate.roadName && candidate.roadName === previousRoad.roadName;
+        const isSameClass = candidate.roadClass === previousRoad.roadClass;
 
-            // Create helper map with minimal style
-            map2 = new maplibregl.Map({
-              container: div2,
-              style: styleInfo.style,
-              center: map.getCenter(),
-              zoom: 15, // Optimal zoom for vector tile data (14-18 range)
-              bearing: map.getBearing(),
-              pitch: 0,
-              preserveDrawingBuffer: false,
-              interactive: false
-            });
-
-            // Wait for helper map to load
-            await new Promise(resolve => map2.once('load', resolve));
+        if (isSameRoad) {
+          // Continuing on exact same road segment - very high probability
+          transitionProb = 0.95;
+        } else if (isSameRoadRef) {
+          // Same road reference (e.g., "A1" motorway) - high probability
+          const bearingDiff = candidate.bearingDiff || 0;
+          if (bearingDiff < 30) {
+            transitionProb = 0.90; // Straight continuation
+          } else if (bearingDiff < 60) {
+            transitionProb = 0.70; // Gentle curve
+          } else if (bearingDiff < 120) {
+            transitionProb = 0.40; // Turn
           } else {
-            console.warn('[HelperMap] Could not extract style, will use main map');
+            transitionProb = 0.10; // Sharp turn / U-turn
           }
-        } catch (error) {
-          console.error('[HelperMap] Failed to create helper map:', error);
-          // Cleanup on error
-          if (map2) {
-            try { map2.remove(); } catch (e) {}
-            map2 = null;
+        } else if (isSameRoadName) {
+          // Same street name - strongly favor continuing in same direction
+          // CRITICAL: In cities, parallel roads often have same name (one for each direction)
+          // We must heavily penalize opposite direction to avoid inappropriate U-turns
+          const bearingDiff = candidate.bearingDiff || 0;
+          if (bearingDiff < 30) {
+            transitionProb = 0.90; // Straight continuation - very high
+          } else if (bearingDiff < 60) {
+            transitionProb = 0.70; // Gentle curve
+          } else if (bearingDiff < 90) {
+            transitionProb = 0.40; // Turn
+          } else if (bearingDiff < 120) {
+            transitionProb = 0.10; // Sharp turn - very unlikely
+          } else {
+            // Opposite direction (120-180°) - almost certainly wrong (parallel road for opposite traffic)
+            transitionProb = 0.01; // Reject opposite direction routes
           }
-          if (div2 && div2.parentNode) {
-            div2.parentNode.removeChild(div2);
-            div2 = null;
+        } else if (isSameClass) {
+          // Same road class but different road - lower probability, favor straight
+          const bearingDiff = candidate.bearingDiff || 0;
+          if (bearingDiff < 20) {
+            transitionProb = 0.60; // Very straight
+          } else if (bearingDiff < 45) {
+            transitionProb = 0.40; // Slight turn
+          } else {
+            transitionProb = 0.15; // Turn
           }
+        } else {
+          // Different road entirely - low probability unless very good reason
+          const bearingDiff = candidate.bearingDiff || 0;
+          transitionProb = bearingDiff < 15 ? 0.30 : 0.05;
         }
+      } else {
+        // First point - no previous road, use only emission probability
+        transitionProb = 1.0;
+      }
 
+      // === SEQUENCE PROBABILITY (optional, for trajectory consistency) ===
+      // Look at last 3-5 points to detect patterns (e.g., consistently on motorway)
+      let sequenceBonus = 1.0;
+      if (trajectoryHistory.length >= 3) {
+        const recentRoadRefs = trajectoryHistory.slice(-3).map(p => p.roadRef).filter(Boolean);
+        if (recentRoadRefs.length >= 2 && candidate.roadRef) {
+          const refConsistency = recentRoadRefs.filter(r => r === candidate.roadRef).length / recentRoadRefs.length;
+          sequenceBonus = 1.0 + refConsistency * 0.5; // Up to 50% bonus for consistency
+        }
+      }
+
+      // === COMBINED HMM SCORE ===
+      // In log space: log(P(obs|state)) + log(P(state|prev_state))
+      // Convert back to linear for easier interpretation
+      const hmmScore = emissionProb * transitionProb * sequenceBonus;
+
+      // Store score in candidate
+      candidate.hmmScore = hmmScore;
+      candidate.emissionProb = emissionProb;
+      candidate.transitionProb = transitionProb;
+
+      if (hmmScore > bestScore) {
+        bestScore = hmmScore;
+        bestCandidate = candidate;
+      }
+    }
+
+    if (bestCandidate && trajectoryHistory.length % 50 === 0) {
+      // Log HMM details every 50 points to avoid spam
+      console.log(`[HMM] Best: ${bestCandidate.roadClass} (${bestCandidate.roadRef || bestCandidate.roadName || 'unnamed'}) | Emission: ${bestCandidate.emissionProb.toFixed(3)} | Transition: ${bestCandidate.transitionProb.toFixed(3)} | Score: ${bestCandidate.hmmScore.toFixed(3)}`);
+    }
+
+    return bestCandidate;
+  },
+
+  /**
+   * Find road by calculating closest point on each road segment to the center position
+   * More accurate and complete than directional ray casting - checks ALL roads in radius
+   * @param {Array} roads - Array of road features to search
+   * @param {Object} center - Center point with lng, lat properties
+   * @param {number} userBearing - User's viewing bearing in MapLibre format (-180 to 180)
+   * @param {number} searchRadius - Maximum search radius in degrees (default: 0.01 ≈ 1.1km)
+   * @returns {Object|null} Closest road or null if none found
+   */
+  _findRoadByDirectionalRay(roads, center, userBearing, searchRadius = 0.01) {
+    console.log(`[ClosestPoint] Finding closest road to position with ${(searchRadius * 111000).toFixed(0)}m radius`);
+    console.log(`[ClosestPoint] User bearing: ${userBearing.toFixed(1)}°`);
+
+    const candidates = []; // Track all candidates for debugging
+    const centerPoint = [center.lng, center.lat];
+
+    let bestRoad = null;
+    let bestScore = Infinity;
+    let bestSegmentIndex = -1;
+    let bestClosestPoint = null;
+    let bestDistance = Infinity;
+
+    // Iterate through all roads and find closest point on each
+    for (const road of roads) {
+      if (!road.geometry || !road.geometry.coordinates) continue;
+
+      const coords = getRoadPoints(road); // Handle both LineString and MultiLineString
+      if (coords.length < 2) continue; // Need at least 2 points for a segment
+
+      const roadClass = road.properties?.class || 'unknown';
+      const roadName = road.properties?.name || 'unnamed';
+
+      // For each segment of this road, find the closest point
+      for (let i = 1; i < coords.length; i++) {
+        const segmentStart = coords[i - 1];
+        const segmentEnd = coords[i];
+
+        // Calculate closest point on this segment
+        const result = closestPointOnSegment(centerPoint, segmentStart, segmentEnd);
+        const distMeters = result.distance;
+
+        // Skip if beyond search radius
+        if (distMeters > searchRadius * 111000) continue;
+
+        // Calculate bearing of the road segment in both directions
+        const roadBearingForward = calculateBearing(
+          segmentStart[0], segmentStart[1],
+          segmentEnd[0], segmentEnd[1]
+        );
+        const roadBearingReverse = normalizeToMapLibreBearing(roadBearingForward + 180);
+
+        // Calculate angle difference for both directions and use the better one
+        const angleDiffForward = Math.abs(normalizeBearingDiff(userBearing - roadBearingForward));
+        const angleDiffReverse = Math.abs(normalizeBearingDiff(userBearing - roadBearingReverse));
+        const angleDiff = Math.min(angleDiffForward, angleDiffReverse);
+
+        // Direction penalty: strongly prefer roads aligned with user's direction
+        // 0° = perfectly aligned (no penalty)
+        // 45° = moderate misalignment (2x penalty)
+        // 90° = perpendicular (4x penalty)
+        // 180° = opposite direction (16x penalty)
+        // Using quadratic penalty: (angleDiff / 90)^2 * multiplier
+        const directionPenaltyFactor = Math.pow(angleDiff / 90, 2);
+        const directionPenalty = directionPenaltyFactor * 3.0; // 3x multiplier
+
+        // Base score is distance * direction penalty
+        let score = distMeters * (1 + directionPenalty);
+
+        // Apply road class hierarchy (prefer major roads)
+        score = applyRoadClassHierarchy(score, roadClass);
+
+        // Track candidate for debugging
+        candidates.push({
+          class: roadClass,
+          name: roadName,
+          distance: distMeters.toFixed(0) + 'm',
+          angleDiff: angleDiff.toFixed(0) + '°',
+          score: score.toFixed(2)
+        });
+
+        // Update best if this is better
+        if (score < bestScore) {
+          bestScore = score;
+          bestRoad = road;
+          bestSegmentIndex = i - 1;
+          bestClosestPoint = result.closestPoint;
+          bestDistance = distMeters;
+        }
+      }
+    }
+
+    // Debug: Show top 10 candidates sorted by score
+    if (candidates.length > 0) {
+      const topCandidates = candidates.sort((a, b) => parseFloat(a.score) - parseFloat(b.score)).slice(0, 10);
+      console.log(`[RoadCandidates] Top ${Math.min(10, topCandidates.length)} candidates (best score first):`);
+      topCandidates.forEach((c, idx) => {
+        console.log(`  ${idx + 1}. ${c.class} "${c.name}" @ ${c.distance} (angle: ${c.angleDiff}, score: ${c.score})`);
+      });
+    } else {
+      console.log(`[ClosestPoint] No roads found within ${(searchRadius * 111000).toFixed(0)}m radius`);
+    }
+
+    if (bestRoad) {
+      const roadClass = bestRoad.properties?.class || 'unknown';
+      const roadName = bestRoad.properties?.name || 'unnamed';
+      console.log(`[ClosestPoint] ✓ Found road: ${roadClass} "${roadName}" at ${bestDistance.toFixed(0)}m (score: ${bestScore.toFixed(2)})`);
+
+      return {
+        road: bestRoad,
+        distance: bestDistance / 111000, // Convert back to degrees for consistency
+        rayName: 'CLOSEST_POINT',
+        rayBearing: userBearing,
+        roadClass,
+        segmentIndex: bestSegmentIndex,
+        closestPoint: bestClosestPoint
+      };
+    }
+
+    console.log('[ClosestPoint] ✗ No roads found');
+    return null;
+  },
+
+  /**
+   * Find the closest point on a road to the current position
+   * @param {Array} roadCoords - Array of [lng, lat] coordinates
+   * @param {Object} currentPos - Current position {lng, lat}
+   * @returns {number} Index of the closest point on the road
+   */
+  _findClosestPointOnRoad(roadCoords, currentPos) {
+    let closestIndex = 0;
+    let minDist = Infinity;
+
+    for (let i = 0; i < roadCoords.length; i++) {
+      const [lng, lat] = roadCoords[i];
+      const dx = lng - currentPos.lng;
+      const dy = lat - currentPos.lat;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist < minDist) {
+        minDist = dist;
+        closestIndex = i;
+      }
+    }
+
+    return closestIndex;
+  },
+
+  /**
+     * Two-phase wrapper for every vehicle preset.
+     *
+     * Returns { setup, animation } so the recorder can run the parts that depend on
+     * the live render loop BEFORE maplibregl.setNow() freezes the clock:
+     *   - creating the invisible helper map (awaits 'load', and 'idle' for terrain),
+     *   - applying the vehicle pitch (an easeTo with a duration cannot progress, and
+     *     'idle' may never fire, once time is frozen).
+     * Road detection stays in the animation phase because it only uses instant
+     * fitBounds + wall-clock setTimeout, which are safe under frozen time. index.js
+     * runs the setup phase in all three modes (test / explore / record), so the
+     * animation phase can assume the helper map is already on `options`.
+     */
+  _followPathWithVehicleSetup: (map, control, options = {}, vehicleProfile) => {
+    return {
+      setup: async (m, c, { updateStatus, checkAbort }) => {
         const pathType = vehicleProfile.transportClasses ? 'path' : 'road';
-        updateStatus(`🛣️ Finding nearest ${pathType}...`);
+        updateStatus(`🛣️ Preparing ${pathType} following...`);
 
-        // Check if helper map is available
-        if (!map2) {
-          console.error('[Setup] Helper map not available - cannot query roads');
-          return;
-        }
+        // Create the invisible helper map used for all road queries.
+        const helperData = await PresetAnimations._createHelperMap(m, 14, false);
+        if (helperData) {
+          options.map2 = helperData.map;
+          options.div2 = helperData.div;
+          options.sourceId2 = helperData.sourceId;
+          options.sourceLayer2 = helperData.sourceLayer;
+          options.debugFeatures = [];
 
-        // Check if source exists
-        const source = map.getSource(sourceId2);
-        if (!source) {
-          return;
-        }
-
-        const initialBearing = map.getBearing();
-        const center = map.getCenter();
-
-        // Use map2 for all road queries
-        // Query roads around current position at current zoom
-        const availableRoads2 = map2.querySourceFeatures(sourceId2, {
-          sourceLayer: sourceLayer2,
-          filter: [
-            'all',
-            ['==', ['geometry-type'], 'LineString'],
-            ['in', ['get', 'class'], ['literal', transportClasses]]
-          ]
-        });
-
-        if (!availableRoads2 || availableRoads2.length === 0) {
-          return;
-        }
-
-        // Find closest road using directional ray intersection
-        // Create 8 virtual rays in cardinal directions from center
-        updateStatus('🔍 Detecting road by intersection...');
-
-        const rayLength = 0.002; // ~200m at equator
-
-        let closestIntersection = null;
-        let minIntersectionDistance = Infinity;
-
-        // Test each ray direction
-        for (const dir of CARDINAL_DIRECTIONS_8) {
-          const angleRad = (dir.angle * Math.PI) / 180;
-          const rayEnd = [
-            center.lng + rayLength * Math.sin(angleRad),
-            center.lat + rayLength * Math.cos(angleRad)
-          ];
-          const rayStart = [center.lng, center.lat];
-
-          // Check intersection with all road segments
-          for (const road of availableRoads2) {
-            if (!road.geometry || !road.geometry.coordinates) continue;
-            const coords = road.geometry.coordinates;
-
-            for (let i = 1; i < coords.length; i++) {
-              const roadSegStart = coords[i - 1];
-              const roadSegEnd = coords[i];
-
-              const dist = segmentIntersection(rayStart, rayEnd, roadSegStart, roadSegEnd);
-              if (dist !== null && dist < minIntersectionDistance) {
-                minIntersectionDistance = dist;
-                closestIntersection = {
-                  road,
-                  direction: dir.name,
-                  distance: dist,
-                  roadClass: road.properties?.class || 'unknown'
-                };
-              }
+          // Copy terrain configuration from the main map if enabled.
+          const terrainConfig = m.getTerrain();
+          if (terrainConfig) {
+            try {
+              options.map2.setTerrain(terrainConfig);
+              await new Promise(resolve => {
+                if (options.map2.isStyleLoaded() && options.map2.areTilesLoaded()) {
+                  resolve();
+                } else {
+                  options.map2.once('idle', resolve);
+                }
+              });
+            } catch (terrainError) {
+              console.warn('[HelperMap] Could not copy terrain configuration:', terrainError);
             }
           }
         }
 
-        if (!closestIntersection) {
-          console.log('[Setup] No road intersection found with rays - falling back to closest point');
-          // Fallback: simple closest point search
-          let closestRoad = null;
-          let minDistance = Infinity;
-          for (const road of availableRoads2) {
-            if (!road.geometry || !road.geometry.coordinates) continue;
-            for (const coord of road.geometry.coordinates) {
-              const [lng, lat] = coord;
-              const dx = lng - center.lng;
-              const dy = lat - center.lat;
-              const distance = Math.sqrt(dx * dx + dy * dy);
-              if (distance < minDistance) {
-                minDistance = distance;
-                closestRoad = road;
-              }
-            }
-          }
-          if (!closestRoad) {
-            return;
-          }
-          closestIntersection = {
-            road: closestRoad,
-            direction: 'fallback',
-            distance: minDistance,
-            roadClass: closestRoad.properties?.class || 'unknown'
-          };
-        }
-
-        const closestRoad = closestIntersection.road;
-
-        // Keep ALL road classes for fluid exploration in dense areas
-        // This allows transitions between minor → primary → tertiary etc.
-
-        let roadCoords = closestRoad.geometry.coordinates;
-
-        // Determine road direction based on user's view
-        if (roadCoords.length >= 2) {
-          const [firstLng, firstLat] = roadCoords[0];
-          const [lastLng, lastLat] = roadCoords[roadCoords.length - 1];
-          const roadBearing = calculateBearing(firstLng, firstLat, lastLng, lastLat);
-          const bearingDiff = normalizeBearingDiff(roadBearing - initialBearing);
-          if (Math.abs(bearingDiff) > 90) {
-            roadCoords = [...roadCoords].reverse();
-          }
-        }
-
-        // No longer need to simulate path - segments will be loaded dynamically during animation
-
-        // Position camera at road start
-        updateStatus(`${vehicleProfile.icon} Positioning at road start...`);
-
-        const targetPitch = vehicleProfile.pitch;
-        map.easeTo({ pitch: targetPitch, duration: 1000, essential: true });
-        await map.once('moveend');
-        checkAbort();
-
-        const [firstLng, firstLat] = roadCoords[0];
-        const firstPoint = { lng: firstLng, lat: firstLat };
-
-        let initialPositionBearing = initialBearing;
-        if (roadCoords.length >= 2) {
-          const [secondLng, secondLat] = roadCoords[1];
-          initialPositionBearing = calculateBearing(firstLng, firstLat, secondLng, secondLat);
-        }
-
-        const vehicleAltitude = vehicleProfile.altitude || 10;
-        const cameraZoom = vehicleProfile.zoom || Math.max(10, Math.min(22, 22 - Math.log2(vehicleAltitude)));
-
-        map.easeTo({
-          center: firstPoint,
-          bearing: initialPositionBearing,
-          zoom: cameraZoom,
-          pitch: targetPitch,
-          duration: 2000,
-          essential: true,
-          easing: t => t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t,
-          noMoveStart: true,
-          delayEndEvents: 0
-        });
-        await map.once('moveend');
-        checkAbort();
-
-        // Wait for map to be completely idle (all rendering finished)
-        await map.once('idle');
+        // Apply the vehicle pitch now, while the clock still runs.
+        m.easeTo({ pitch: vehicleProfile.pitch, duration: 1000, essential: true });
+        await m.once('moveend');
         checkAbort();
       },
-      animation: async (map, control) => {
-        // This is the actual animation - runs AFTER recording starts
-        // Segments will be loaded dynamically during animation
-        // Pass helper map and source info via options
-        const animOptions = {
-          ...options,
-          map2,
-          div2,
-          sourceId2,
-          sourceLayer2,
-          debugFeatures
-        };
-        await PresetAnimations._followPathWithVehicle(map, control, animOptions, vehicleProfile);
-      },
-      supportsExploration: vehicleProfile.supportsExploration
+      animation: async (m, c) => PresetAnimations._followPathWithVehicle(m, c, options, vehicleProfile),
+      profile: vehicleProfile
     };
   },
 
@@ -2663,123 +3192,25 @@ export const PresetAnimations = {
      * Generic road following with vehicle profile
      * Used by all vehicle-specific animations (car, plane, helicopter, drone, bird)
      * Segments are loaded dynamically during animation at current zoom level
+     * The helper map is created in the setup phase (see _followPathWithVehicleSetup).
      */
   _followPathWithVehicle: async (map, { updateStatus, checkAbort }, options = {}, vehicleProfile) => {
     const duration = options.duration || 20000;
-    updateStatus('🛣️ Finding nearest road...');
 
-    // Create helper map if not already created (for Explore mode)
-    if (!options.map2) {
-      try {
-        const styleInfo = _extractMinimalStyle(map);
+    // Default transport classes (roads) if not specified
+    // For vehicles, exclude pedestrian paths (path, track, footway, pedestrian, steps)
+    const transportClasses = vehicleProfile.transportClasses || [
+      'motorway', 'trunk', 'primary', 'secondary', 'tertiary',
+      'minor', 'service'
+    ];
 
-        if (!styleInfo) {
-          console.error('[HelperMap] Failed to extract style info from main map');
-        } else if (!styleInfo.vectorSources.roads.sourceId) {
-          console.error('[HelperMap] No roads source found in style');
-          console.error('[HelperMap] Available sources:', styleInfo.vectorSources);
-        }
-
-        if (styleInfo && styleInfo.vectorSources.roads.sourceId) {
-          options.sourceId2 = styleInfo.vectorSources.roads.sourceId;
-          options.sourceLayer2 = styleInfo.vectorSources.roads.sourceLayer;
-
-          // Remove any existing helper div
-          const existingDiv = document.getElementById('maplibre-query-helper');
-          if (existingDiv && existingDiv.parentNode) {
-            existingDiv.parentNode.removeChild(existingDiv);
-          }
-
-          // Create invisible div
-          const mainContainer = map.getContainer();
-          const width = mainContainer.offsetWidth;
-          const height = mainContainer.offsetHeight;
-
-          options.div2 = document.createElement('div');
-          options.div2.id = 'maplibre-query-helper';
-          options.div2.style.cssText = `
-                        position: absolute;
-                        top: -9999px;
-                        left: -9999px;
-                        width: ${width}px;
-                        height: ${height}px;
-                        visibility: hidden;
-                        pointer-events: none;
-                    `;
-          document.body.appendChild(options.div2);
-
-          // Create helper map
-          options.map2 = new maplibregl.Map({
-            container: options.div2,
-            style: styleInfo.style,
-            center: map.getCenter(),
-            zoom: 18,
-            bearing: map.getBearing(),
-            pitch: 0,
-            interactive: false
-          });
-
-          await new Promise(resolve => options.map2.once('load', resolve));
-
-          // Create GeoJSON visualization layer
-          try {
-            const debugSourceId = 'drone-followed-segments';
-            const debugLayerId = 'drone-followed-segments-layer';
-
-            // Remove existing source/layer if any
-            if (map.getLayer(debugLayerId)) {
-              map.removeLayer(debugLayerId);
-            }
-            if (map.getSource(debugSourceId)) {
-              map.removeSource(debugSourceId);
-            }
-
-            // Add empty GeoJSON source
-            map.addSource(debugSourceId, {
-              type: 'geojson',
-              data: {
-                type: 'FeatureCollection',
-                features: []
-              }
-            });
-
-            // Add line layer (magenta, 4px wide)
-            map.addLayer({
-              id: debugLayerId,
-              type: 'line',
-              source: debugSourceId,
-              layout: {
-                'line-join': 'round',
-                'line-cap': 'round'
-              },
-              paint: {
-                'line-color': '#FF00FF', // Magenta
-                'line-width': 4,
-                'line-opacity': 0.8
-              }
-            });
-          } catch (layerError) {
-            console.warn('[Debug] Could not create visualization layer:', layerError);
-          }
-        }
-      } catch (error) {
-        console.error('[HelperMap] Failed to create helper map:', error);
-      }
-    }
-
-    // Initialize debug features array if not exists
-    if (!options.debugFeatures) {
-      options.debugFeatures = [];
-    }
-
-    // Extract map2 and source info from options
+    // Reuse the helper map created before time was frozen (setup phase).
     const map2 = options.map2;
-    const sourceId2 = options.sourceId2 || 'openmaptiles';
-    const sourceLayer2 = options.sourceLayer2 || 'transportation';
+    const sourceId2 = options.sourceId2;
+    const sourceLayer2 = options.sourceLayer2;
 
-    // Check if map2 exists
     if (!map2) {
-      console.error('[Animation] map2 is not available - cannot query roads');
+      console.error('[Animation] Helper map not available');
       updateStatus('⚠️ Helper map not available - using terrain following');
       await PresetAnimations.terrainFollowing(map, { updateStatus, checkAbort }, options);
       return;
@@ -2788,80 +3219,107 @@ export const PresetAnimations = {
     // Check if source exists
     const source = map.getSource(sourceId2);
     if (!source) {
+      console.error('[Animation] Source not found');
       updateStatus('⚠️ No vector source - using terrain following');
-      // Cleanup helper map and debug layer before fallback
       cleanupHelperMap(options, map);
       await PresetAnimations.terrainFollowing(map, { updateStatus, checkAbort }, options);
       return;
     }
 
-    const initialBearing = map.getBearing();
+    const initialBearing = map.getBearing(); // MapLibre returns -180 to 180
     const center = map.getCenter();
 
-    // Query roads around current position to find initial segment
-    const roads2 = map2.querySourceFeatures(sourceId2, {
+    console.log(`[InitialBearing] User is facing: ${initialBearing.toFixed(1)}° (MapLibre format -180/180)`);
+
+    // Query roads from helper map
+    updateStatus('🔍 Detecting road by directional ray casting...');
+    const roads = map2.querySourceFeatures(sourceId2, {
       sourceLayer: sourceLayer2,
-      filter: ROAD_QUERY_FILTER
+      filter: [
+        'all',
+        ['==', ['geometry-type'], 'LineString'],
+        ['in', ['get', 'class'], ['literal', transportClasses]],
+        ...ROAD_EXCLUSION_FILTER
+      ]
     });
 
-    if (!roads2 || roads2.length === 0) {
-      updateStatus('⚠️ No roads found - using terrain following');
-      // Cleanup helper map and debug layer before fallback
-      cleanupHelperMap(options, map);
-      await PresetAnimations.terrainFollowing(map, { updateStatus, checkAbort }, options);
-      return;
-    }
+    console.log(`[RoadQuery] Found ${roads.length} roads in query area`);
 
-    // Find closest road to center
-    let closestRoad = null;
-    let minDistance = Infinity;
+    // Find road using directional ray casting (cast rays in user's exact direction)
+    let closestIntersection = PresetAnimations._findRoadByDirectionalRay(
+      roads,
+      center,
+      initialBearing,
+      0.01 // 1.1km ray length
+    );
 
-    for (const road of roads2) {
-      if (!road.geometry || !road.geometry.coordinates) continue;
+    // Fallback: if no intersection found, try distance-based search
+    if (!closestIntersection) {
+      console.log('[Setup] No directional intersection - trying distance-based fallback...');
+      closestIntersection = PresetAnimations._findClosestRoadByDistance(roads, center, initialBearing);
 
-      // Check distance to first point of each road segment
-      for (const coord of road.geometry.coordinates) {
-        const [lng, lat] = coord;
-        const dx = lng - center.lng;
-        const dy = lat - center.lat;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-
-        if (distance < minDistance) {
-          minDistance = distance;
-          closestRoad = road;
-        }
+      if (closestIntersection) {
+        console.log(`[Setup] Fallback found road at ${(closestIntersection.distance * 111).toFixed(0)}m with angle ${closestIntersection.angleDiff?.toFixed(1)}°`);
       }
     }
 
-    if (!closestRoad) {
+    if (!closestIntersection) {
+      console.error('[Animation] No road found');
       updateStatus('⚠️ No valid road found - using terrain following');
-      // Cleanup helper map and debug layer before fallback
       cleanupHelperMap(options, map);
       await PresetAnimations.terrainFollowing(map, { updateStatus, checkAbort }, options);
       return;
     }
 
-    let roadCoords = closestRoad.geometry.coordinates;
+    const closestRoad = closestIntersection.road;
     const roadClass = closestRoad.properties?.class || 'road';
 
-    // Determine road direction based on user's initial map orientation
-    // If the road naturally goes in the opposite direction to where the user is looking,
-    // reverse it so the animation follows the user's intended direction
+    // Log road selection
+    if (closestIntersection.rayName) {
+      // Directional ray result
+      console.log(`[RoadSelection] Found ${roadClass} via ray ${closestIntersection.rayName} | Distance: ${(closestIntersection.distance * 111).toFixed(0)}m`);
+    } else if (closestIntersection.angleDiff !== undefined) {
+      // Distance-based fallback with directional scoring
+      console.log(`[RoadSelection] Found ${roadClass} (distance-based) | Distance: ${(closestIntersection.distance * 111).toFixed(0)}m | Angle diff: ${closestIntersection.angleDiff.toFixed(1)}°`);
+    } else {
+      // Basic result
+      console.log(`[RoadSelection] Found ${roadClass} | Distance: ${(closestIntersection.distance * 111).toFixed(0)}m`);
+    }
+
+    // Get road coordinates (handle MultiLineString)
+    let roadCoords = getRoadPoints(closestRoad);
+
+    // Simple direction check (like v0.1.1): calculate bearing from start to end of road
+    // If it's opposite to user's view, reverse the coordinates
     if (roadCoords.length >= 2) {
       const [firstLng, firstLat] = roadCoords[0];
       const [lastLng, lastLat] = roadCoords[roadCoords.length - 1];
       const roadBearing = calculateBearing(firstLng, firstLat, lastLng, lastLat);
-
-      // Calculate the angular difference between road direction and user's view
-      // Normalize to [-180, 180] range
       const bearingDiff = normalizeBearingDiff(roadBearing - initialBearing);
 
-      // If the difference is > 90° or < -90°, the road goes in the opposite direction
-      // Reverse the coordinates to follow the road in the user's intended direction
       if (Math.abs(bearingDiff) > 90) {
         roadCoords = [...roadCoords].reverse();
       }
     }
+
+    // Find closest point on the road to join from current position
+    const startIndex = PresetAnimations._findClosestPointOnRoad(roadCoords, center);
+
+    // Start from user's current position, then join the road at closest point
+    const currentPosition = [center.lng, center.lat];
+    roadCoords = [currentPosition, ...roadCoords.slice(startIndex)];
+
+    updateStatus(`${vehicleProfile.icon} Following ${roadClass} (${roadCoords.length} points)...`);
+
+    if (roadCoords.length < 2) {
+      console.error('[Animation] Road segment too short after adding start position');
+      updateStatus('⚠️ Road segment too short - using terrain following');
+      cleanupHelperMap(options, map);
+      await PresetAnimations.terrainFollowing(map, { updateStatus, checkAbort }, options);
+      return;
+    }
+
+    // ============ ANIMATION PHASE: Follow the road ============
 
     // Helper function to find next connected segment
     // Returns null if no valid connection found
@@ -2871,11 +3329,6 @@ export const PresetAnimations = {
         secondLastPoint[0], secondLastPoint[1],
         lastPoint[0], lastPoint[1]
       );
-
-      // Get current road properties for continuity scoring
-      const currentRoadName = currentSegmentCoords.roadName;
-      const currentRoadRef = currentSegmentCoords.roadRef;
-      const currentRoadClass = currentSegmentCoords.roadClass;
 
       // If using helper map, position it ahead before querying
       if (options.map2 && vehicleProfile.searchRadius) {
@@ -2888,30 +3341,35 @@ export const PresetAnimations = {
       }
 
       // Query roads dynamically around current position
-      // Uses animation zoom level (18.5 for drone) = ultra-detailed geometry with all tiny segments
-      const currentRoads2 = map2.querySourceFeatures(sourceId2, {
+      // Uses helper map at zoom 14 for consistent road geometry queries
+      currentRoads2 = map2.querySourceFeatures(sourceId2, {
         sourceLayer: sourceLayer2,
         filter: ROAD_QUERY_FILTER
       });
 
       let bestNextSegment = null;
-      let bestScore = Infinity; // Lower score is better
-      let candidateCount = 0; // Track how many candidates we evaluate
+      const candidates = []; // Collect all candidates for HMM scoring
 
-      // Connection threshold: back to 50m to avoid jumping between roads
-      const connectionThreshold = 0.0005;
+      // Strict connection threshold: segments must be truly connected
+      const connectionThreshold = 0.00002; // ~2m - vector data should be nearly exact
 
       for (const road of currentRoads2) {
         if (!road.geometry || !road.geometry.coordinates) {
           continue;
         }
 
-        if (usedIds.has(road.id)) {
+        // Check if this specific segment portion has been used
+        const segmentKey = getSegmentKey(road);
+        if (segmentKey && usedIds.has(segmentKey)) {
           continue;
         }
 
-        const roadStart = road.geometry.coordinates[0];
-        const roadEnd = road.geometry.coordinates[road.geometry.coordinates.length - 1];
+        // Use getRoadPoints to handle MultiLineString
+        const roadCoordinates = getRoadPoints(road);
+        if (roadCoordinates.length < 2) continue;
+
+        const roadStart = roadCoordinates[0];
+        const roadEnd = roadCoordinates[roadCoordinates.length - 1];
 
         // Check if this segment starts near our current endpoint
         const dxStart = roadStart[0] - lastPoint[0];
@@ -2932,7 +3390,7 @@ export const PresetAnimations = {
         // Within threshold - evaluate this segment as a candidate
         // Determine if we need to reverse this segment
         const shouldReverse = distanceToEnd < distanceToStart;
-        const effectiveCoords = shouldReverse ? [...road.geometry.coordinates].reverse() : road.geometry.coordinates;
+        const effectiveCoords = shouldReverse ? [...roadCoordinates].reverse() : roadCoordinates;
 
         // Need at least 2 points to calculate bearing
         if (effectiveCoords.length < 2) continue;
@@ -2967,63 +3425,48 @@ export const PresetAnimations = {
           continue;
         }
 
-        // Reject U-turns (> 150°) completely - never acceptable
-        if (bearingDiff > 150) continue;
+        // Reject U-turns and opposite directions (> 135°) completely
+        // This prevents jumping to parallel roads going the opposite direction
+        if (bearingDiff > 135) continue;
 
-        const distance = Math.min(distanceToStart, distanceToEnd);
+        const distance = minDist;
 
-        // === HIERARCHICAL PRIORITY SYSTEM ===
-        // Priority order: roadRef > roadName > roadClass > position
-        // Lower score = better choice
+        // === COLLECT CANDIDATES FOR HMM SCORING ===
+        // Collect all valid candidates instead of scoring immediately
+        // The HMM will score them based on emission & transition probabilities
 
         const roadName = road.properties?.name;
         const roadRef = road.properties?.ref;
         const roadClass = road.properties?.class;
 
-        const isSameRef = roadRef && currentRoadRef && roadRef === currentRoadRef;
-        const isSameName = roadName && currentRoadName && roadName === currentRoadName;
-        const isSameClass = roadClass && currentRoadClass && roadClass === currentRoadClass;
+        candidates.push({
+          road,
+          coords: effectiveCoords,
+          reversed: shouldReverse,
+          bearingDiff,
+          distance,
+          roadName,
+          roadRef,
+          roadClass
+        });
+      }
 
-        let score = 0;
-
-        // PRIORITY 1: Same roadRef (D123, A1, etc.) → ALWAYS WIN
-        if (isSameRef) {
-          score = 0 + distance * 10 + bearingDiff * 0.01; // Range: 0-10
-        } else if (isSameName) {
-          // PRIORITY 2: Same roadName (Rue Gambetta, etc.) → ALMOST ALWAYS WIN
-          score = 100 + distance * 10 + bearingDiff * 0.01; // Range: 100-110
-        } else if (isSameClass) {
-          // PRIORITY 3: Same roadClass (no name) → STRONGLY PREFER STRAIGHT
-          score = 1000 + distance * 10 + bearingDiff * 50; // bearingDiff is KEY!
-          // 5° vs 90° = 1250 vs 5500 → 4x better score for going straight
-        } else {
-          // PRIORITY 4: Different road → VERY STRONGLY PREFER STRAIGHT
-          score = 10000 + distance * 100 + bearingDiff * 200;
-          // bearingDiff CRITICAL - strongly favor continuing straight
-        }
-
-        candidateCount++;
-
-        if (score < bestScore) {
-          bestScore = score;
-          bestNextSegment = {
-            road,
-            coords: effectiveCoords,
-            reversed: shouldReverse,
-            bearingDiff,
-            distance,
-            score, // For debugging
-            roadName, // Store for logging
-            roadRef
-          };
-        }
+      // === HMM SCORING ===
+      // Use Hidden Markov Model to select the best candidate
+      // Takes into account: emission probability (distance to road) and transition probability (continuity)
+      if (candidates.length > 0) {
+        bestNextSegment = PresetAnimations._scoreRoadCandidatesHMM(
+          candidates,
+          previousRoad,
+          trajectoryHistory
+        );
       }
 
       // If no segment found and we have a helper map, try adjusting zoom
       if (!bestNextSegment && options.map2 && vehicleProfile.searchRadius) {
         const currentZoom2 = options.map2.getZoom();
         // Vector tile data is typically in zoom 14-18, try different levels
-        const zoomsToTry = currentZoom2 === 18 ? [16, 17] : []; // Try wider views
+        const zoomsToTry = currentZoom2 === 14 ? [15, 16] : []; // Try wider views
 
         for (const zoomLevel of zoomsToTry) {
           // Adjust helper map zoom
@@ -3039,10 +3482,16 @@ export const PresetAnimations = {
           // Re-run scoring logic (simplified - just find ANY connected segment)
           for (const road of retryRoads2) {
             if (!road.geometry || !road.geometry.coordinates) continue;
-            if (usedIds.has(road.id)) continue;
+            // usedIds holds segment keys (getSegmentKey), not raw road ids.
+            const retrySegmentKey = getSegmentKey(road);
+            if (retrySegmentKey && usedIds.has(retrySegmentKey)) continue;
 
-            const roadStart = road.geometry.coordinates[0];
-            const roadEnd = road.geometry.coordinates[road.geometry.coordinates.length - 1];
+            // Use getRoadPoints to handle MultiLineString
+            const retryRoadCoords = getRoadPoints(road);
+            if (retryRoadCoords.length < 2) continue;
+
+            const roadStart = retryRoadCoords[0];
+            const roadEnd = retryRoadCoords[retryRoadCoords.length - 1];
 
             const dxStart = roadStart[0] - lastPoint[0];
             const dyStart = roadStart[1] - lastPoint[1];
@@ -3057,7 +3506,7 @@ export const PresetAnimations = {
             if (minDist < connectionThreshold) {
               // Found a connected segment!
               const shouldReverse = distanceToEnd < distanceToStart;
-              const effectiveCoords = shouldReverse ? [...road.geometry.coordinates].reverse() : road.geometry.coordinates;
+              const effectiveCoords = shouldReverse ? [...retryRoadCoords].reverse() : retryRoadCoords;
 
               if (effectiveCoords.length >= 2) {
                 const effectiveStart = effectiveCoords[0];
@@ -3068,7 +3517,7 @@ export const PresetAnimations = {
                 );
                 const bearingDiff = Math.abs(normalizeBearingDiff(nextSegmentBearing - currentBearing));
 
-                if (bearingDiff <= 150) { // Not a U-turn
+                if (bearingDiff <= 135) { // Not a U-turn or opposite direction
                   bestNextSegment = {
                     road,
                     coords: effectiveCoords,
@@ -3087,14 +3536,14 @@ export const PresetAnimations = {
 
           if (bestNextSegment) {
             // Restore original zoom
-            options.map2.setZoom(18);
+            options.map2.setZoom(14);
             break;
           }
         }
 
         // Restore original zoom if we didn't find anything
         if (!bestNextSegment && options.map2) {
-          options.map2.setZoom(18);
+          options.map2.setZoom(14);
         }
       }
 
@@ -3103,19 +3552,14 @@ export const PresetAnimations = {
 
     updateStatus(`${vehicleProfile.icon} Following ${roadClass} (${roadCoords.length} points)...`);
 
-    // Set pitch from vehicle profile
+    // Pitch is applied in the setup phase (before time is frozen) and re-applied on
+    // every per-frame easeTo below, so no separate pitch ease is needed here.
     const targetPitch = vehicleProfile.pitch;
-    map.easeTo({ pitch: targetPitch, duration: 1000, essential: true });
-    await map.once('moveend');
-    checkAbort();
 
     // Configuration from vehicle profile
     // Define realistic speed in km/h (will be used to calculate duration based on distance)
     const vehicleSpeedKmh = vehicleProfile.speedKmh || 30; // Default: 30 km/h
     const maxSegments = 10000; // Very high limit just to prevent infinite loops in case of bugs
-
-    // NOTE: Initial positioning is now done in the setup phase (before recording starts)
-    // This function only handles the actual road following animation
 
     // Track animation state (works in both test and recording modes)
     // Use maplibregl.now() which returns virtual time when frozen, real time otherwise
@@ -3129,9 +3573,20 @@ export const PresetAnimations = {
       : resamplePath(roadCoords, 0.01); // Linear interpolation (10m spacing)
 
     // Store initial road properties for continuity tracking
+    currentSegmentCoords.roadId = closestRoad.id;
     currentSegmentCoords.roadClass = closestRoad.properties?.class;
     currentSegmentCoords.roadName = closestRoad.properties?.name;
     currentSegmentCoords.roadRef = closestRoad.properties?.ref;
+
+    // === HMM STATE TRACKING ===
+    // Track trajectory history for Hidden Markov Model road matching
+    const trajectoryHistory = []; // Array of {point: [lng, lat], road: roadObject, roadRef, roadName, roadClass}
+    let previousRoad = {
+      id: closestRoad.id,
+      roadRef: closestRoad.properties?.ref,
+      roadName: closestRoad.properties?.name,
+      roadClass: closestRoad.properties?.class
+    };
 
     // Smoothing buffer for zoom
     const zoomBuffer = [];
@@ -3140,10 +3595,22 @@ export const PresetAnimations = {
     updateStatus(`${vehicleProfile.icon} Following road network...`);
 
     // Main animation loop: follow points and chain segments dynamically
-    const usedSegmentIds = new Set([closestRoad.id]);
-    let currentSegmentIndex = 1; // Start at second point since camera is already at first point
+    // Snake-style tracking: keep only the last N segments to allow loops and limit memory
+    const MAX_SEGMENT_HISTORY = 150; // Keep last 150 segments (~15km at 100m/segment)
+    const segmentHistory = []; // Array to maintain insertion order for FIFO removal
+    const usedSegmentIds = new Set(); // Set for O(1) lookup
+
+    // Add initial road segment
+    const initialSegmentKey = getSegmentKey(closestRoad);
+    if (initialSegmentKey) {
+      segmentHistory.push(initialSegmentKey);
+      usedSegmentIds.add(initialSegmentKey);
+    }
+
+    let currentSegmentIndex = 0; // Start at first point (we're already at closest point from setup)
     let segmentCount = 1;
-    let totalPointsVisited = 1; // We've already visited the first point
+    let totalPointsVisited = 0; // Start counting from current position
+    var currentRoads2; // Declare once for use in findNextSegment and main loop
 
     try {
       while (true) {
@@ -3182,6 +3649,12 @@ export const PresetAnimations = {
           // Segments are loaded dynamically in findNextSegment
           let nextSegment = await findNextSegment(lastPoint, secondLastPoint, usedSegmentIds);
 
+          // Query roads once for cardinal search and exploration mode (if needed)
+          currentRoads2 = map2.querySourceFeatures(sourceId2, {
+            sourceLayer: sourceLayer2,
+            filter: ROAD_QUERY_FILTER
+          });
+
           // If STILL no connected segment, search in cardinal directions for nearby roads
           if (!nextSegment) {
             const currentBearing = calculateBearing(
@@ -3193,6 +3666,14 @@ export const PresetAnimations = {
             const currentClass = currentSegmentCoords.roadClass || closestRoad.properties?.class;
             const prefer = currentClass ? [currentClass] : []; // Prefer same road type
 
+            // Pass current road info for continuity bonus
+            const currentRoad = {
+              id: currentSegmentCoords.roadId || closestRoad.id,
+              name: currentSegmentCoords.roadName || closestRoad.properties?.name,
+              ref: currentSegmentCoords.roadRef || closestRoad.properties?.ref,
+              class: currentClass
+            };
+
             // Use smaller searchRadius for cardinal search (200m max instead of vehicle's searchRadius)
             // This prevents huge jumps when no road is directly connected
             const cardinalSearchRadius = Math.min(0.002, vehicleProfile.searchRadius || 0.002); // Max 200m
@@ -3200,8 +3681,8 @@ export const PresetAnimations = {
               lastPoint,
               currentBearing,
               usedSegmentIds,
-              roads2,
-              { prefer, searchRadius: cardinalSearchRadius }
+              currentRoads2,
+              { prefer, searchRadius: cardinalSearchRadius, currentRoad }
             );
 
             if (nextSegment) {
@@ -3228,14 +3709,24 @@ export const PresetAnimations = {
 
               // Search for road at this point
               const currentClass = currentSegmentCoords.roadClass || closestRoad.properties?.class;
+
+              // Pass current road info for continuity bonus
+              const exploreCurrentRoad = {
+                id: currentSegmentCoords.roadId || closestRoad.id,
+                name: currentSegmentCoords.roadName || closestRoad.properties?.name,
+                ref: currentSegmentCoords.roadRef || closestRoad.properties?.ref,
+                class: currentClass
+              };
+
               foundRoad = _findNearbyRoadInCardinalDirections(
                 [searchLng, searchLat],
                 currentBearing,
                 usedSegmentIds,
-                roads2,
+                currentRoads2,
                 {
                   prefer: currentClass ? [currentClass] : [],
-                  searchRadius: (vehicleProfile.searchRadius || 0.002) * 0.5 // Half radius for exploration mode
+                  searchRadius: (vehicleProfile.searchRadius || 0.002) * 0.5, // Half radius for exploration mode
+                  currentRoad: exploreCurrentRoad
                 }
               );
 
@@ -3290,6 +3781,27 @@ export const PresetAnimations = {
           }
 
           if (nextSegment) {
+            // === UPDATE HMM STATE ===
+            // Update previousRoad for next iteration's transition probability
+            previousRoad = {
+              id: nextSegment.road.id,
+              roadRef: nextSegment.road.properties?.ref,
+              roadName: nextSegment.road.properties?.name,
+              roadClass: nextSegment.road.properties?.class
+            };
+
+            // Add to trajectory history (keep last 20 points for pattern detection)
+            trajectoryHistory.push({
+              point: lastPoint,
+              road: nextSegment.road,
+              roadRef: nextSegment.road.properties?.ref,
+              roadName: nextSegment.road.properties?.name,
+              roadClass: nextSegment.road.properties?.class
+            });
+            if (trajectoryHistory.length > 20) {
+              trajectoryHistory.shift(); // Keep only recent history
+            }
+
             // Chain to the next segment
             // Resample segment for uniform point spacing (smoother speed)
             // Skip first point (already at it) ONLY if we have more than 2 points
@@ -3306,13 +3818,30 @@ export const PresetAnimations = {
                 : resamplePath(nextSegment.coords, 0.01); // Linear (10m spacing)
             }
             // Store road properties for continuity tracking
+            currentSegmentCoords.roadId = nextSegment.road.id;
             currentSegmentCoords.roadClass = nextSegment.road.properties?.class;
             currentSegmentCoords.roadName = nextSegment.road.properties?.name;
             currentSegmentCoords.roadRef = nextSegment.road.properties?.ref;
 
             currentSegmentIndex = 0;
             segmentCount++;
-            usedSegmentIds.add(nextSegment.road.id);
+
+            // Mark this SPECIFIC portion of road as used (not the entire road!)
+            // Use getSegmentKey() to create unique key with coordinate validation
+            const segmentKey = getSegmentKey(nextSegment.road);
+
+            // Snake-style history: add to both structures (only if key is valid)
+            if (segmentKey) {
+              segmentHistory.push(segmentKey);
+              usedSegmentIds.add(segmentKey);
+
+              // Remove oldest segment if we exceed the limit (allows loops after ~15km)
+              if (segmentHistory.length > MAX_SEGMENT_HISTORY) {
+                const oldestKey = segmentHistory.shift();
+                usedSegmentIds.delete(oldestKey);
+                console.log(`[SnakeHistory] Removed oldest segment (keeping last ${MAX_SEGMENT_HISTORY})`);
+              }
+            }
 
             const segmentClass = nextSegment.road.properties?.class || 'road';
             const segmentName = nextSegment.road.properties?.name;
@@ -3351,7 +3880,7 @@ export const PresetAnimations = {
                 });
 
                 // Update GeoJSON source
-                const debugSource = map.getSource('drone-followed-segments');
+                const debugSource = map.getSource('followed-segments');
                 if (debugSource) {
                   debugSource.setData({
                     type: 'FeatureCollection',
@@ -3404,14 +3933,35 @@ export const PresetAnimations = {
         }
 
         // Sample terrain elevation at current road point
-        const elevation = map.queryTerrainElevation(currentPoint);
-        let targetZoom = vehicleProfile.zoom;
+        // Use map2 if available and has terrain enabled, otherwise fallback to main map
+        let elevation = null;
+        if (map2 && map2.getTerrain && map2.getTerrain()) {
+          elevation = map2.queryTerrainElevation(currentPoint);
+        } else if (map.getTerrain && map.getTerrain()) {
+          elevation = map.queryTerrainElevation(currentPoint);
+        }
 
+        // Adjust zoom based on terrain elevation to maintain constant altitude above ground
+        let targetZoom = vehicleProfile.zoom;
         if (elevation !== null && elevation >= 0) {
-          const elevationKm = elevation / 1000;
+          // vehicleProfile.altitude = desired height above ground in meters
+          // elevation = current terrain elevation in meters
+          // Target absolute altitude = terrain elevation + vehicle's relative altitude
+          const targetAltitudeAbsolute = elevation + vehicleProfile.altitude;
+
+          // Convert absolute altitude to zoom level
+          // Higher absolute altitude = need to zoom out (smaller zoom value)
+          const targetAltitudeKm = targetAltitudeAbsolute / 1000;
           const baseZoom = vehicleProfile.zoom;
-          const elevationAdjustment = elevationKm * 1.5;
+
+          // Zoom adjustment factor: ~1.5 zoom levels per km of absolute altitude
+          const elevationAdjustment = targetAltitudeKm * 1.5;
           targetZoom = Math.max(10, baseZoom - elevationAdjustment);
+
+          // Log altitude info for debugging (every 30 points to avoid spam)
+          if (totalPointsVisited % 30 === 0) {
+            console.log(`[Altitude] Terrain: ${elevation.toFixed(1)}m | Profile offset: ${vehicleProfile.altitude}m | Absolute: ${targetAltitudeAbsolute.toFixed(1)}m | Zoom: ${targetZoom.toFixed(2)}`);
+          }
         }
 
         // Smoothing
@@ -3462,7 +4012,7 @@ export const PresetAnimations = {
       altitude: 8,
       zoom: 20, // Very close for slow speed
       pitch: 60,
-      smoothing: 5,
+      smoothing: 10,
       speedKmh: 30, // Slow tractor speed
       searchRadius: 0.002, // 200m search radius for ground vehicle
       preloadDistance: 0.002, // 200m preload for slow vehicle
@@ -3480,10 +4030,10 @@ export const PresetAnimations = {
      */
   carRoadTrip: (map, control, options = {}) => {
     const profile = {
-      altitude: 15,
-      zoom: 19, // Medium distance for car speed
+      altitude: 10,
+      zoom: 19.5, // Close view for immersive driving
       pitch: 60,
-      smoothing: 5,
+      smoothing: 10,
       speedKmh: 70, // Highway driving speed
       searchRadius: 0.002, // 200m search radius for ground vehicle
       preloadDistance: 0.005, // 500m preload for car speed
@@ -3497,15 +4047,15 @@ export const PresetAnimations = {
 
   /**
      * 🏎️ Sports Car - Follow roads at racing speed
-     * Higher zoom for high-speed driving, wider view ahead
+     * Low dashcam-like view for maximum speed sensation
      */
   sportsCarRace: (map, control, options = {}) => {
     const profile = {
-      altitude: 25,
-      zoom: 17.5, // Higher up to see further ahead at high speed
+      altitude: 12,
+      zoom: 19, // Close dashcam view for intense speed sensation
       pitch: 60,
-      smoothing: 5,
-      speedKmh: 130, // Sports car racing speed
+      smoothing: 10,
+      speedKmh: 160, // Sports car racing speed
       searchRadius: 0.003, // 300m search radius for fast vehicle
       preloadDistance: 0.010, // 1km preload for high speed
       icon: '🏎️',
@@ -3547,7 +4097,7 @@ export const PresetAnimations = {
       zoom: 17.5,
       pitch: 70,
       smoothing: 6,
-      speedKmh: 60, // Helicopter touring speed
+      speedKmh: 85, // Helicopter touring speed
       searchRadius: 0.005, // 500m search radius for medium altitude
       preloadDistance: 0.005, // 500m preload for helicopter
       icon: '🚁',

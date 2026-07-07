@@ -21,7 +21,7 @@
  * @param {any} map - MapLibre map instance
  * @param {any} control - VideoExportControl instance
  * @param {VideoExportOptions} options - Export options
- * @returns {{ setup: Function, animation: Function, supportsExploration: boolean }}
+ * @returns {{ setup?: Function, animation: Function, profile?: Object }}
  */
 
 /**
@@ -2050,6 +2050,7 @@ class VideoExportControl {
             <div class="button-group">
                 <button class="btn-secondary" id="ve-test">▶️ Test</button>
                 <button class="btn-secondary" id="ve-explore" style="display: none;">🗺️ Explore</button>
+                <button class="btn-secondary" id="ve-back" style="display: none;">🔙 Back</button>
                 <button class="btn-primary" id="ve-record">🔴 Record</button>
             </div>
 
@@ -2081,14 +2082,13 @@ class VideoExportControl {
     // Initialize waypoints icon select
     this._initWaypointsIconSelect();
 
-    // Load and apply saved settings (or defaults if first time)
-    const settings = this._loadSettings();
-    this._applySettings(settings);
-
+    // Bind events first so they can respond to applySettings changes
     this._bindEvents();
 
-    // Initialize animation description display
-    this._updateAnimationDescription();
+    // Load and apply saved settings (or defaults if first time)
+    // The change events triggered by applySettings will update UI components
+    const settings = this._loadSettings();
+    this._applySettings(settings);
   }
 
   _bindEvents() {
@@ -2116,6 +2116,7 @@ class VideoExportControl {
 
     this._panel.querySelector('#ve-test')?.addEventListener('click', () => this._testAnimation());
     this._panel.querySelector('#ve-explore')?.addEventListener('click', () => this._startExploration());
+    this._panel.querySelector('#ve-back')?.addEventListener('click', () => this._backFromExploration());
     this._panel.querySelector('#ve-record')?.addEventListener('click', () => this._startRecording());
 
     // Reset to defaults button
@@ -3579,14 +3580,14 @@ class VideoExportControl {
                 <div style="margin-bottom: 6px;">
                     <label style="font-size: 11px;">
                         <input type="checkbox" id="ve-popup-camera-toggle-${index}">
-                        Capturer la position de caméra
+                        Capture camera position
                     </label>
                     <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; margin-top: 3px;">
                         <input type="number" id="ve-popup-zoom-${index}" placeholder="Zoom" size="3" step="0.5" style="padding: 3px; font-size: 11px;" disabled>
                         <input type="number" id="ve-popup-bearing-${index}" placeholder="Bearing" size="3" step="1" style="padding: 3px; font-size: 11px;" disabled>
                         <input type="number" id="ve-popup-pitch-${index}" placeholder="Pitch" size="3" step="1" style="padding: 3px; font-size: 11px;" disabled>
                     </div>
-                    <small style="display: block; color: #999; font-size: 10px; margin-top: 2px;">Fige le zoom et l'angle de vue pour ce point de passage</small>
+                    <small style="display: block; color: #999; font-size: 10px; margin-top: 2px;">Lock zoom and viewing angle for this waypoint</small>
                 </div>
 
                 <div style="margin-bottom: 6px;">
@@ -5849,9 +5850,9 @@ class VideoExportControl {
       // Handle custom object with metadata
       const animObj = this.options.animation;
       // @ts-ignore - We already checked that animation is not null
-      if (animObj.supportsExploration !== undefined) {
+      if (animObj.profile?.supportsExploration !== undefined) {
         // @ts-ignore - We already checked that animation is not null
-        supportsExploration = animObj.supportsExploration;
+        supportsExploration = animObj.profile.supportsExploration;
       }
     }
     // Custom functions don't support exploration by default
@@ -6151,12 +6152,44 @@ class VideoExportControl {
     }
   }
 
+  _backFromExploration() {
+    if (!this._panel) return;
+    if (!this._animationController.running || !this._isExploring) return;
+
+    const exploreBtn = asButton(this._panel.querySelector('#ve-explore'));
+    const backBtn = asButton(this._panel.querySelector('#ve-back'));
+    const testBtn = asButton(this._panel.querySelector('#ve-test'));
+    const recordBtn = asButton(this._panel.querySelector('#ve-record'));
+    if (!exploreBtn || !backBtn || !testBtn || !recordBtn) return;
+
+    // Cancel exploration and return to start position
+    this._animationController.cancel(this._map);
+
+    // Clear progress timer if exists
+    if (this._exploreProgressTimer) {
+      clearInterval(this._exploreProgressTimer);
+      this._exploreProgressTimer = null;
+    }
+
+    // Reset UI
+    exploreBtn.innerHTML = '🗺️ Explore';
+    backBtn.style.display = 'none';
+    testBtn.style.display = 'inline-block';
+    testBtn.disabled = false;
+    recordBtn.innerHTML = '🔴 Record';
+    recordBtn.disabled = false;
+    this._updateStatus('Returned to start position', 'error');
+    this._expandInterface();
+    this._isExploring = false;
+  }
+
   async _startExploration() {
     if (!this._panel) return;
     const exploreBtn = asButton(this._panel.querySelector('#ve-explore'));
+    const backBtn = asButton(this._panel.querySelector('#ve-back'));
     const testBtn = asButton(this._panel.querySelector('#ve-test'));
     const recordBtn = asButton(this._panel.querySelector('#ve-record'));
-    if (!exploreBtn || !testBtn || !recordBtn) return;
+    if (!exploreBtn || !backBtn || !testBtn || !recordBtn) return;
 
     // Save settings to localStorage
     this._saveSettings();
@@ -6165,9 +6198,9 @@ class VideoExportControl {
     const resetMessage = this._panel.querySelector('#ve-reset-message');
     if (resetMessage) resetMessage.style.display = 'none';
 
-    // If running, cancel it
+    // If running, stop it (stay at current position)
     if (this._animationController.running) {
-      this._animationController.cancel(this._map);
+      this._animationController.stop(); // Stop without restoring position
 
       // Clear progress timer if exists
       if (this._exploreProgressTimer) {
@@ -6176,10 +6209,12 @@ class VideoExportControl {
       }
 
       exploreBtn.innerHTML = '🗺️ Explore';
+      backBtn.style.display = 'none';
+      testBtn.style.display = 'inline-block';
       testBtn.disabled = false;
       recordBtn.innerHTML = '🔴 Record';
       recordBtn.disabled = false;
-      this._updateStatus('Exploration stopped', 'error');
+      this._updateStatus('Exploration stopped here', 'error');
       this._expandInterface();
       // Clear exploration flag
       this._isExploring = false;
@@ -6189,10 +6224,10 @@ class VideoExportControl {
     // Set exploration mode
     this._isExploring = true;
 
-    exploreBtn.innerHTML = '⏹️ Stop';
-    testBtn.disabled = true;
-    recordBtn.innerHTML = '📍 Record from here';
-    recordBtn.disabled = false; // Keep record button active for "record from here"
+    exploreBtn.innerHTML = '⏹️ Stop here';
+    backBtn.style.display = 'inline-block';
+    testBtn.style.display = 'none'; // Hide test button during exploration
+    recordBtn.disabled = true; // Disable record button during exploration
     this._collapseInterface();
 
     try {
@@ -6297,6 +6332,8 @@ class VideoExportControl {
       }
 
       exploreBtn.innerHTML = '🗺️ Explore';
+      backBtn.style.display = 'none';
+      testBtn.style.display = 'inline-block';
       testBtn.disabled = false;
       recordBtn.innerHTML = '🔴 Record';
       recordBtn.disabled = false;
@@ -6318,28 +6355,6 @@ class VideoExportControl {
     // Hide reset message if visible
     const resetMessage = this._panel.querySelector('#ve-reset-message');
     if (resetMessage) resetMessage.style.display = 'none';
-
-    // SPECIAL CASE: If we're in exploration mode and click "Record from here"
-    if (this._isExploring && this._animationController.running) {
-      console.log('[Recording] 📍 Starting recording from current exploration position');
-
-      // Stop exploration
-      this._animationController.cancel(this._map);
-      this._isExploring = false;
-
-      // Reset exploration UI
-      if (exploreBtn) exploreBtn.innerHTML = '🗺️ Explore';
-      if (testBtn) testBtn.disabled = true; // Disable test during recording
-      if (recordBtn) recordBtn.innerHTML = '⏹️ Cancel';
-
-      this._updateStatus('Recording from current position...', 'recording');
-
-      // Small delay to let exploration cleanup
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      // Continue to normal recording flow
-      // The camera is already at the desired position from exploration
-    }
 
     // If running, cancel it
     if (this._animationController.running) {
