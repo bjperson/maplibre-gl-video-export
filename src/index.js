@@ -6761,8 +6761,13 @@ class VideoExportControl {
       try {
         encoder = await this._loadEncoderForFormat(width, height, this.options.fps, bitrate);
       } catch (encoderError) {
-        // Check if it's a CSP error when trying to load MP4
-        if (this.options.format === 'mp4' && (encoderError.name === 'EvalError' || encoderError.message.includes('CSP'))) {
+        const err = /** @type {Error} */ (encoderError);
+        // MP4 uses WASM; strict CSP blocks it as EvalError or WebAssembly.CompileError.
+        if (this.options.format === 'mp4' && (
+          err.name === 'EvalError' ||
+          err.name === 'CompileError' ||
+          /CSP|Content Security|Wasm code generation disallowed|unsafe-eval/i.test(err.message || '')
+        )) {
           console.warn('⚠️ MP4 encoder blocked by Content Security Policy (CSP)');
           console.warn('   This often happens on GitHub Pages or other static hosts with strict CSP');
           console.warn('   Falling back to WebM VP9...');

@@ -246,6 +246,10 @@ export class WebCodecsVP9Encoder {
     }
 
     if (this.output) {
+      // Release muxer resources if torn down before finalize (e.g. cancel).
+      if (!this.isFinalized && typeof this.output.cancel === 'function') {
+        this.output.cancel().catch(() => {});
+      }
       this.output = null;
     }
 
