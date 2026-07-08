@@ -1835,6 +1835,29 @@ function _findNearbyRoadInCardinalDirections(fromPoint, currentBearing, usedSegm
 }
 
 /**
+ * Build a setup phase that frames the user's waypoints before recording starts.
+ * Runs pre-freeze as a real flyTo that settles (moveend), so a geometric preset then
+ * runs its pattern around the framed view. Returns null when there is nothing to frame
+ * (no waypoints), leaving the preset at its default start position.
+ * @param {Object} [options]
+ * @returns {Function|null} setup(map, control, { checkAbort, updateStatus })
+ */
+export function createWaypointFramingSetup(options = {}) {
+  const waypoints = options.waypoints || null;
+  const count = Array.isArray(waypoints) ? waypoints.length : (waypoints?.features?.length || 0);
+  if (count === 0) return null;
+
+  return async (map, _control, { checkAbort, updateStatus } = {}) => {
+    const optimalView = getOptimalViewForWaypoints(map, waypoints);
+    if (!optimalView) return;
+    if (updateStatus) updateStatus('🎯 Framing waypoints...');
+    map.flyTo({ center: optimalView.center, zoom: optimalView.zoom, duration: 1500, essential: true });
+    await map.once('moveend');
+    if (checkAbort) checkAbort();
+  };
+}
+
+/**
  * Preset animations that work on any map
  */
 export const PresetAnimations = {
@@ -1843,20 +1866,7 @@ export const PresetAnimations = {
      */
   orbit360: async (map, { updateStatus, checkAbort }, options = {}) => {
     const duration = options.duration || 10000;
-    const waypoints = options.waypoints || null;
-
-    // If waypoints exist, position map to show all of them
-    if (waypoints) {
-      const optimalView = getOptimalViewForWaypoints(map, waypoints);
-      if (optimalView) {
-        updateStatus('🔄 Positioning to show all waypoints...');
-        map.jumpTo({
-          center: optimalView.center,
-          zoom: optimalView.zoom
-        });
-        await virtualSleep(500); // Brief pause for map to settle
-      }
-    }
+    // Waypoint framing is handled by the shared setup phase (createWaypointFramingSetup).
 
     updateStatus('🔄 360° orbit...');
 
@@ -1869,20 +1879,7 @@ export const PresetAnimations = {
      */
   zoomPulse: async (map, { updateStatus, checkAbort }, options = {}) => {
     const duration = options.duration || 5000;
-    const waypoints = options.waypoints || null;
-
-    // If waypoints exist, position map to show all of them
-    if (waypoints) {
-      const optimalView = getOptimalViewForWaypoints(map, waypoints);
-      if (optimalView) {
-        updateStatus('🔍 Positioning to show all waypoints...');
-        map.jumpTo({
-          center: optimalView.center,
-          zoom: optimalView.zoom
-        });
-        await virtualSleep(500);
-      }
-    }
+    // Waypoint framing is handled by the shared setup phase (createWaypointFramingSetup).
 
     updateStatus('🔍 Zoom pulse...');
     const startZoom = map.getZoom();
@@ -1909,20 +1906,7 @@ export const PresetAnimations = {
      */
   figure8: async (map, { updateStatus, checkAbort }, options = {}) => {
     const duration = options.duration || 15000;
-    const waypoints = options.waypoints || null;
-
-    // If waypoints exist, position map to show all of them
-    if (waypoints) {
-      const optimalView = getOptimalViewForWaypoints(map, waypoints);
-      if (optimalView) {
-        updateStatus('∞ Positioning to show all waypoints...');
-        map.jumpTo({
-          center: optimalView.center,
-          zoom: optimalView.zoom
-        });
-        await virtualSleep(500);
-      }
-    }
+    // Waypoint framing is handled by the shared setup phase (createWaypointFramingSetup).
 
     updateStatus('∞ Figure-8 pattern...');
     const center = map.getCenter();

@@ -60,7 +60,7 @@
  */
 
 // Import modules
-import { AnimationConstraints, AnimationDirector, PresetAnimations } from './animations.js';
+import { AnimationConstraints, AnimationDirector, PresetAnimations, createWaypointFramingSetup } from './animations.js';
 import { AnimationController } from './controller.js';
 import { WebmEncoderWrapper } from './webm-encoder-wrapper.js';
 
@@ -5717,6 +5717,9 @@ class VideoExportControl {
 
   async _getAnimation() {
     let animation;
+    // Geometric presets (loops/cinematic groups) get a shared waypoint-framing setup
+    // below; road/waypoint/smart presets manage their own start position.
+    let isGeometricPreset = false;
 
     // Handle custom function animations
     if (typeof this.options.animation === 'function') {
@@ -5735,6 +5738,7 @@ class VideoExportControl {
 
       if (profile) {
         const director = new AnimationDirector(this._map);
+        isGeometricPreset = profile.group === 'loops' || profile.group === 'cinematic';
         // Call animation function with director for 'smart' animation
         animation = (map, control) => profile.func(map, control, this.options, director);
       } else {
@@ -5764,6 +5768,13 @@ class VideoExportControl {
       // Standard format: { setup, animation }
       setup = result.setup || null;
       animationFn = result.animation;
+
+      // Geometric presets don't ship a setup; frame the user's waypoints (if any) before
+      // recording so the pattern runs centered on them, like the dedicated waypointTour.
+      if (!setup && isGeometricPreset) {
+        setup = createWaypointFramingSetup(this.options);
+        if (setup) console.log('🎯 Geometric preset: framing waypoints in setup phase');
+      }
 
       if (setup) {
         console.log('🎬 Animation with setup phase');
