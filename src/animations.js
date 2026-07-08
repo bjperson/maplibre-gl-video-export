@@ -684,8 +684,10 @@ const rotatePanorama360 = async (map, duration, { checkAbort, degreesPerStep = 2
 
     currentBearing = nextBearing(currentBearing, degreesPerStep);
 
-    // Progress is 0.0 to 1.0
-    const progress = i / totalSteps;
+    // Progress is 0.0 to 1.0. Divide by (totalSteps - 1) so the final step reaches
+    // exactly 1.0, letting seamless-loop presets (e.g. aerialSweep) return to their
+    // initial state instead of stopping ~one step short.
+    const progress = totalSteps > 1 ? i / (totalSteps - 1) : 1;
 
     // Calculate pitch for this step if configured
     let currentPitch;
@@ -728,10 +730,14 @@ const rotatePanorama360 = async (map, duration, { checkAbort, degreesPerStep = 2
 
       if (pitchToCheck > 0) {
         const terrainAwareZoom = calculateTerrainAwareZoom(map, pitchToCheck);
-        const currentZoom = map.getZoom();
+        // Clamp against the zoom this step will actually apply: the onStep-provided
+        // zoom if present, otherwise the current map zoom (easeTo leaves it unchanged).
+        // Checking map.getZoom() would let an onStep-driven zoom-out slip through one
+        // unsafe step and then oscillate.
+        const requestedZoom = easToOptions.zoom !== undefined ? easToOptions.zoom : map.getZoom();
 
         // Only adjust if we need more zoom for safety
-        if (currentZoom < terrainAwareZoom) {
+        if (requestedZoom < terrainAwareZoom) {
           easToOptions.zoom = terrainAwareZoom;
         }
       }
