@@ -148,8 +148,8 @@ const ANIMATION_PROFILES = {
     group: 'loops',
     requires: [],
     /** @type {AnimationFunction} */
-    func: (_map, _control, _options) => ({
-      animation: async (m, callbacks, opts) => PresetAnimations.orbit360(m, callbacks, opts)
+    func: (_map, _control, options) => ({
+      animation: async (m, callbacks) => PresetAnimations.orbit360(m, callbacks, options)
     })
   },
   pulse: {
@@ -159,8 +159,8 @@ const ANIMATION_PROFILES = {
     group: 'loops',
     requires: [],
     /** @type {AnimationFunction} */
-    func: (_map, _control, _options) => ({
-      animation: async (m, callbacks, opts) => PresetAnimations.zoomPulse(m, callbacks, opts)
+    func: (_map, _control, options) => ({
+      animation: async (m, callbacks) => PresetAnimations.zoomPulse(m, callbacks, options)
     })
   },
   orbitZoom: {
@@ -170,8 +170,8 @@ const ANIMATION_PROFILES = {
     group: 'loops',
     requires: [],
     /** @type {AnimationFunction} */
-    func: (_map, _control, _options) => ({
-      animation: async (m, callbacks, opts) => PresetAnimations.orbitZoom(m, callbacks, opts)
+    func: (_map, _control, options) => ({
+      animation: async (m, callbacks) => PresetAnimations.orbitZoom(m, callbacks, options)
     })
   },
   waveMotion: {
@@ -181,8 +181,8 @@ const ANIMATION_PROFILES = {
     group: 'loops',
     requires: ['?hasWater'], // Better with water
     /** @type {AnimationFunction} */
-    func: (_map, _control, _options) => ({
-      animation: async (m, callbacks, opts) => PresetAnimations.waveMotion(m, callbacks, opts)
+    func: (_map, _control, options) => ({
+      animation: async (m, callbacks) => PresetAnimations.waveMotion(m, callbacks, options)
     })
   },
   pendulum: {
@@ -192,8 +192,8 @@ const ANIMATION_PROFILES = {
     group: 'loops',
     requires: [],
     /** @type {AnimationFunction} */
-    func: (_map, _control, _options) => ({
-      animation: async (m, callbacks, opts) => PresetAnimations.pendulum(m, callbacks, opts)
+    func: (_map, _control, options) => ({
+      animation: async (m, callbacks) => PresetAnimations.pendulum(m, callbacks, options)
     })
   },
 
@@ -205,7 +205,7 @@ const ANIMATION_PROFILES = {
     group: 'cinematic',
     requires: ['?hasPlaces', '?hasRoads'], // Better with places and roads
     /** @type {AnimationFunction} */
-    func: (_map, _control, _options) => ({ animation: async (m, callbacks, opts) => PresetAnimations.neighborhood(m, callbacks, opts) })
+    func: (_map, _control, options) => ({ animation: async (m, callbacks) => PresetAnimations.neighborhood(m, callbacks, options) })
   },
   property: {
     label: '🏡 Property Showcase',
@@ -214,7 +214,7 @@ const ANIMATION_PROFILES = {
     group: 'cinematic',
     requires: ['?has3DBuildings'], // Better with 3D buildings
     /** @type {AnimationFunction} */
-    func: (_map, _control, _options) => ({ animation: async (m, callbacks, opts) => PresetAnimations.propertyShowcase(m, callbacks, opts) })
+    func: (_map, _control, options) => ({ animation: async (m, callbacks) => PresetAnimations.propertyShowcase(m, callbacks, options) })
   },
   explore: {
     label: '🧭 Explore Around',
@@ -223,7 +223,7 @@ const ANIMATION_PROFILES = {
     group: 'cinematic',
     requires: [],
     /** @type {AnimationFunction} */
-    func: (_map, _control, _options) => ({ animation: async (m, callbacks, opts) => PresetAnimations.exploreAround(m, callbacks, opts) })
+    func: (_map, _control, options) => ({ animation: async (m, callbacks) => PresetAnimations.exploreAround(m, callbacks, options) })
   },
   panorama: {
     label: '📷 Panoramic Sweep',
@@ -232,7 +232,7 @@ const ANIMATION_PROFILES = {
     group: 'cinematic',
     requires: [],
     /** @type {AnimationFunction} */
-    func: (_map, _control, _options) => ({ animation: async (m, callbacks, opts) => PresetAnimations.panorama(m, callbacks, opts) })
+    func: (_map, _control, options) => ({ animation: async (m, callbacks) => PresetAnimations.panorama(m, callbacks, options) })
   },
   aerial: {
     label: '🚁 Aerial Sweep',
@@ -241,7 +241,7 @@ const ANIMATION_PROFILES = {
     group: 'cinematic',
     requires: [],
     /** @type {AnimationFunction} */
-    func: (_map, _control, _options) => ({ animation: async (m, callbacks, opts) => PresetAnimations.aerialSweep(m, callbacks, opts) })
+    func: (_map, _control, options) => ({ animation: async (m, callbacks) => PresetAnimations.aerialSweep(m, callbacks, options) })
   },
   droneShot: {
     label: '🛸 Drone Shot',
@@ -250,7 +250,7 @@ const ANIMATION_PROFILES = {
     group: 'cinematic',
     requires: [],
     /** @type {AnimationFunction} */
-    func: (_map, _control, _options) => ({ animation: async (m, callbacks, opts) => PresetAnimations.droneShot(m, callbacks, opts) })
+    func: (_map, _control, options) => ({ animation: async (m, callbacks) => PresetAnimations.droneShot(m, callbacks, options) })
   },
   terrainFollowing: {
     label: '🏔️ Terrain Following',
@@ -259,7 +259,7 @@ const ANIMATION_PROFILES = {
     group: 'cinematic',
     requires: ['?hasTerrain', '?hasHillshade'], // Better with terrain
     /** @type {AnimationFunction} */
-    func: (_map, _control, _options) => ({ animation: async (m, callbacks, opts) => PresetAnimations.terrainFollowing(m, callbacks, opts) })
+    func: (_map, _control, options) => ({ animation: async (m, callbacks) => PresetAnimations.terrainFollowing(m, callbacks, options) })
   },
   spotlightScan: {
     label: '🔦 Spotlight Scan',
@@ -268,7 +268,7 @@ const ANIMATION_PROFILES = {
     group: 'cinematic',
     requires: [],
     /** @type {AnimationFunction} */
-    func: (_map, _control, _options) => ({ animation: async (m, callbacks, opts) => PresetAnimations.spotlightScan(m, callbacks, opts) })
+    func: (_map, _control, options) => ({ animation: async (m, callbacks) => PresetAnimations.spotlightScan(m, callbacks, options) })
   },
   butterfly: {
     label: '🦋 Butterfly',
@@ -277,7 +277,7 @@ const ANIMATION_PROFILES = {
     group: 'cinematic',
     requires: [],
     /** @type {AnimationFunction} */
-    func: (_map, _control, _options) => ({ animation: async (m, callbacks, opts) => PresetAnimations.butterfly(m, callbacks, opts) })
+    func: (_map, _control, options) => ({ animation: async (m, callbacks) => PresetAnimations.butterfly(m, callbacks, options) })
   },
   figure8: {
     label: '∞ Figure-8',
@@ -286,7 +286,7 @@ const ANIMATION_PROFILES = {
     group: 'cinematic',
     requires: [],
     /** @type {AnimationFunction} */
-    func: (_map, _control, _options) => ({ animation: async (m, callbacks, opts) => PresetAnimations.figure8(m, callbacks, opts) })
+    func: (_map, _control, options) => ({ animation: async (m, callbacks) => PresetAnimations.figure8(m, callbacks, options) })
   },
   spiral: {
     label: '🌀 Spiral Zoom',
@@ -295,7 +295,7 @@ const ANIMATION_PROFILES = {
     group: 'cinematic',
     requires: [],
     /** @type {AnimationFunction} */
-    func: (_map, _control, _options) => ({ animation: async (m, callbacks, opts) => PresetAnimations.spiralZoom(m, callbacks, opts) })
+    func: (_map, _control, options) => ({ animation: async (m, callbacks) => PresetAnimations.spiralZoom(m, callbacks, options) })
   },
 
   // 🛣️ Road Following (exploration-capable)
