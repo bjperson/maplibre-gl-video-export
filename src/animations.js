@@ -2686,9 +2686,11 @@ export const PresetAnimations = {
    * @param {Object} mainMap - The main MapLibre map instance
    * @param {number} zoom - Zoom level for the helper map (default: 14)
    * @param {boolean} includeDebugLayer - Whether to create debug visualization layer (default: false)
+   * @param {string} sourceCategory - Which detected vector source to return for queries:
+   *   'roads' (default), 'railways' or 'waterways'
    * @returns {Promise<Object>} Returns { map, div, sourceId, sourceLayer } or null on error
    */
-  async _createHelperMap(mainMap, zoom = 14, includeDebugLayer = false) {
+  async _createHelperMap(mainMap, zoom = 14, includeDebugLayer = false, sourceCategory = 'roads') {
     try {
       const styleInfo = _extractMinimalStyle(mainMap);
 
@@ -2697,8 +2699,9 @@ export const PresetAnimations = {
         return null;
       }
 
-      if (!styleInfo.vectorSources.roads.sourceId) {
-        console.error('[HelperMap] No roads source found in style');
+      const categorySource = styleInfo.vectorSources[sourceCategory];
+      if (!categorySource || !categorySource.sourceId) {
+        console.error(`[HelperMap] No ${sourceCategory} source found in style`);
         console.error('[HelperMap] Available sources:', styleInfo.vectorSources);
         return null;
       }
@@ -2788,8 +2791,8 @@ export const PresetAnimations = {
       return {
         map: helperMap,
         div,
-        sourceId: styleInfo.vectorSources.roads.sourceId,
-        sourceLayer: styleInfo.vectorSources.roads.sourceLayer
+        sourceId: categorySource.sourceId,
+        sourceLayer: categorySource.sourceLayer
       };
     } catch (error) {
       console.error('[HelperMap] Failed to create helper map:', error);
@@ -3166,8 +3169,17 @@ export const PresetAnimations = {
         const pathType = vehicleProfile.transportClasses ? 'path' : 'road';
         updateStatus(`🛣️ Preparing ${pathType} following...`);
 
-        // Create the invisible helper map used for all road queries.
-        const helperData = await PresetAnimations._createHelperMap(m, 14, false);
+        // Create the invisible helper map used for all path queries. Boats follow
+        // waterways and trains follow railways, which live in different vector
+        // sources than roads, so pick the source matching this vehicle's classes.
+        const tc = vehicleProfile.transportClasses || [];
+        let sourceCategory = 'roads';
+        if (tc.some(c => ['river', 'canal', 'stream'].includes(c))) {
+          sourceCategory = 'waterways';
+        } else if (tc.some(c => ['rail', 'transit'].includes(c))) {
+          sourceCategory = 'railways';
+        }
+        const helperData = await PresetAnimations._createHelperMap(m, 14, false, sourceCategory);
         if (helperData) {
           options.map2 = helperData.map;
           options.div2 = helperData.div;
