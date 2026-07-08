@@ -5019,6 +5019,22 @@ class VideoExportControl {
     this._recordingStartTime = null;
   }
 
+  /**
+   * Stop the Test/Explore progress intervals. Test, Explore and Record all write to the
+   * same widget spans; recording is driven per-frame by _updateProgress and must own the
+   * widget alone, so any lingering interval from a prior mode is cleared before recording.
+   */
+  _clearProgressTimers() {
+    if (this._testProgressTimer) {
+      clearInterval(this._testProgressTimer);
+      this._testProgressTimer = null;
+    }
+    if (this._exploreProgressTimer) {
+      clearInterval(this._exploreProgressTimer);
+      this._exploreProgressTimer = null;
+    }
+  }
+
   _showFinalStats(stats) {
     if (!this._progressWidget) return;
 
@@ -6381,6 +6397,7 @@ class VideoExportControl {
       recordBtn.innerHTML = '🔴 Record';
       recordBtn.disabled = false;
       this._updateStatus('Cancelled', 'error');
+      this._clearProgressTimers();
       this._hideProgress();
       this._expandInterface();
       // Clear recording flag immediately on cancel
@@ -6415,6 +6432,10 @@ class VideoExportControl {
     testBtn.disabled = true;
     recordBtn.innerHTML = '⏹️ Cancel';
     this._collapseInterface();
+
+    // Recording drives the widget per-frame via _updateProgress; kill any Test/Explore
+    // interval still writing to the same spans so it can't fight the frame-based display.
+    this._clearProgressTimers();
 
     try {
       // Read fresh options from UI inputs
