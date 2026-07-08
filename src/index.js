@@ -6394,6 +6394,11 @@ class VideoExportControl {
       return;
     }
 
+    // Claim the recording slot synchronously — before any await below — so a rapid
+    // second click cannot slip past the _isRecording guard above and start a second
+    // concurrent capture. Released in this method's finally (and _doRecording's).
+    this._isRecording = true;
+
     testBtn.disabled = true;
     recordBtn.innerHTML = '⏹️ Cancel';
     this._collapseInterface();
@@ -6415,6 +6420,9 @@ class VideoExportControl {
       }
       this._hideProgress();
     } finally {
+      // Release the slot claimed above. _doRecording's own finally also clears this on
+      // the normal path; this covers early throws (before that finally runs).
+      this._isRecording = false;
       testBtn.disabled = false;
       recordBtn.innerHTML = '🔴 Record';
       this._expandInterface();
@@ -6627,9 +6635,8 @@ class VideoExportControl {
 
     this._updateStatus(`Loading ${this.options.format.toUpperCase()} encoder...`, 'recording');
 
-    // Set recording flag to prevent waypoints layer recreation
-    this._isRecording = true;
-    console.log('[Recording] 🔒 Recording flag SET - layer updates blocked');
+    // Note: this._isRecording is claimed synchronously in the record handler (before
+    // any await) to close the double-start race; it is not (re)set here.
 
     // Get resolution
     const resolution = this._getResolution();

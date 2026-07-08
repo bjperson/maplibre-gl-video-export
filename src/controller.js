@@ -10,6 +10,9 @@ export class AnimationController {
     this.abortController = null;
     this.isRunning = false;
     this.initialPosition = null;
+    // Remembers whether the last run was cancelled, so `aborted` stays correct after
+    // cleanup() nulls out abortController.
+    this._aborted = false;
   }
 
   /**
@@ -30,6 +33,7 @@ export class AnimationController {
     this.isRunning = true;
     this.abortController = new AbortController();
     this.initialPosition = this._capturePosition(map);
+    this._aborted = false;
 
     // Capture the signal reference to avoid context issues
     const signal = this.abortController.signal;
@@ -61,6 +65,7 @@ export class AnimationController {
      * Cancel the current animation and restore initial position
      */
   cancel(map) {
+    this._aborted = true;
     if (this.abortController) {
       this.abortController.abort();
     }
@@ -96,7 +101,11 @@ export class AnimationController {
      * Check if the animation has been aborted
      */
   get aborted() {
-    return this.abortController?.signal.aborted ?? false;
+    // While a run is active, reflect the live signal; once cleaned up (abortController
+    // nulled), fall back to the remembered flag set by cancel() and reset by run().
+    // stop() (used after normal completion) does not set it, so a finished run is not
+    // reported as aborted.
+    return this.abortController?.signal.aborted ?? this._aborted;
   }
 
   /**
