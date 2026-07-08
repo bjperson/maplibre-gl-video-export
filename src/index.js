@@ -6582,16 +6582,16 @@ class VideoExportControl {
   }
 
   /**
-   * Zero out tile/label fade durations for the duration of the export so tiles and
-   * labels appear crisp on the exact frame they load, instead of cross-fading over
-   * ~300ms of virtual time as the capture loop advances setNow(). Most visible with
-   * raster/satellite layers (raster cross-fade). Values are restored by
-   * _restoreMapFades() in the recording finally block.
+   * Zero out raster tile fade durations for the duration of the export so tiles
+   * appear crisp on the exact frame they load, instead of cross-fading over ~300ms
+   * of virtual time as the capture loop advances setNow(). Only raster/satellite
+   * layers are frozen: label collision fades look better left natural (freezing them
+   * makes labels pop in/out abruptly). Restored by _restoreMapFades() in the finally.
    */
   _freezeMapFades() {
     this._savedFades = null;
     if (!this._map) return;
-    const saved = { raster: [], symbolFadeDuration: undefined };
+    const saved = { raster: [] };
     try {
       // Raster tile cross-fade: public, per raster layer.
       const layers = (this._map.getStyle() && this._map.getStyle().layers) || [];
@@ -6603,12 +6603,6 @@ class VideoExportControl {
           });
           this._map.setPaintProperty(layer.id, 'raster-fade-duration', 0);
         }
-      }
-      // Symbol/label collision fade: no public setter, so mutate the private field
-      // (declared in maplibre's type defs). Guarded in case it disappears upstream.
-      if (typeof this._map._fadeDuration === 'number') {
-        saved.symbolFadeDuration = this._map._fadeDuration;
-        this._map._fadeDuration = 0;
       }
       this._savedFades = saved;
     } catch (error) {
@@ -6627,9 +6621,6 @@ class VideoExportControl {
       for (const entry of saved.raster) {
         // A saved undefined resets the layer to its default fade (setPaintProperty).
         this._map.setPaintProperty(entry.id, 'raster-fade-duration', entry.value);
-      }
-      if (saved.symbolFadeDuration !== undefined && typeof this._map._fadeDuration === 'number') {
-        this._map._fadeDuration = saved.symbolFadeDuration;
       }
     } catch (error) {
       console.warn('[Recording] Could not restore map fades:', error);
