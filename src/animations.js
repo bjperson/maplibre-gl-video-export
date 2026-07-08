@@ -124,7 +124,7 @@ const closestPointOnSegment = (point, segmentStart, segmentEnd) => {
 
   // If segment is a point, return distance to that point
   if (dx === 0 && dy === 0) {
-    const dist = Math.sqrt((px - x1) ** 2 + (py - y1) ** 2) * 111000; // Convert to meters
+    const dist = degreesToMeters(planarDistanceDegrees(point, [x1, y1]));
     return { closestPoint: [x1, y1], distance: dist };
   }
 
@@ -135,9 +135,8 @@ const closestPointOnSegment = (point, segmentStart, segmentEnd) => {
   const closestX = x1 + t * dx;
   const closestY = y1 + t * dy;
 
-  // Distance in meters
-  const distDegrees = Math.sqrt((px - closestX) ** 2 + (py - closestY) ** 2);
-  const distMeters = distDegrees * 111000;
+  // Distance in meters (cos-lat corrected, see planarDistanceDegrees)
+  const distMeters = degreesToMeters(planarDistanceDegrees(point, [closestX, closestY]));
 
   return { closestPoint: [closestX, closestY], distance: distMeters };
 };
@@ -240,11 +239,29 @@ const cleanupHelperMap = (options, map) => {
 };
 
 /**
- * Convert degrees to meters (at equator)
- * @param {number} degrees - Isotropic degree distance (√(dLng²+dLat²))
+ * Planar distance between two [lng, lat] points, in latitude-equivalent degrees.
+ * Longitude deltas are scaled by cos(mean latitude) so one unit ≈ one degree of latitude
+ * in every direction; this removes the isotropic bias of a raw √(Δlng²+Δlat²) (a raw hypot
+ * over-weights east–west by 1/cos(lat), ≈ +44% at 46°N). Single source of truth for local
+ * planar distance in the road-matching code: scoring and thresholds stay in these
+ * degree-equivalent units; only surfaced values (thresholds, user-facing logs) convert to
+ * meters via degreesToMeters.
+ * @param {Array} a - [lng, lat]
+ * @param {Array} b - [lng, lat]
+ * @returns {number} distance in latitude-equivalent degrees
+ */
+const planarDistanceDegrees = (a, b) => {
+  const cosLat = Math.cos((a[1] + b[1]) / 2 * Math.PI / 180);
+  const dLng = (b[0] - a[0]) * cosLat;
+  const dLat = b[1] - a[1];
+  return Math.sqrt(dLng * dLng + dLat * dLat);
+};
+
+/**
+ * Convert a latitude-equivalent degree distance (see planarDistanceDegrees) to meters.
+ * 111000 m per degree of latitude; used only where a real metric value is surfaced.
+ * @param {number} degrees - latitude-equivalent degree distance
  * @returns {number} Approximate distance in meters
- * Note: uses the flat 111000 m/deg convention shared across this module; it is
- * NOT corrected for cos(latitude) (see the flat-earth follow-up).
  */
 const degreesToMeters = (degrees) => degrees * 111000;
 
@@ -270,12 +287,10 @@ const segmentIntersection = (p1, p2, p3, p4) => {
   const u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / denom;
 
   if (t >= 0 && t <= 1 && u >= 0 && u <= 1) {
-    // Intersection exists - calculate point and distance
+    // Intersection exists - distance from p1 to the intersection point
     const ix = x1 + t * (x2 - x1);
     const iy = y1 + t * (y2 - y1);
-    const dx = ix - x1;
-    const dy = iy - y1;
-    return Math.sqrt(dx * dx + dy * dy);
+    return planarDistanceDegrees([x1, y1], [ix, iy]);
   }
   return null; // No intersection
 };
@@ -1762,7 +1777,7 @@ function _findNearbyRoadInCardinalDirections(fromPoint, currentBearing, usedSegm
   console.log(`[CircleArc] Found ${arcIntersectionCount} intersections on arc segments`);
 
   // Safety check: reject roads that are too far away to avoid huge jumps.
-  // bestRoad.distance is an isotropic degree distance (from segmentIntersection).
+  // bestRoad.distance is a cos-lat-corrected degree distance (from segmentIntersection).
   const maxJumpDistanceMeters = 50; // 50m maximum for cardinal search
   if (bestRoad && degreesToMeters(bestRoad.distance) > maxJumpDistanceMeters) {
     console.log(`[CardinalSearch] Rejecting road at ${degreesToMeters(bestRoad.distance).toFixed(0)}m (> ${maxJumpDistanceMeters}m limit)`);
@@ -2799,10 +2814,7 @@ export const PresetAnimations = {
       let roadClosestPoint = null;
 
       for (const coord of roadPoints) {
-        const [lng, lat] = coord;
-        const dx = lng - center.lng;
-        const dy = lat - center.lat;
-        const distance = Math.sqrt(dx * dx + dy * dy);
+        const distance = planarDistanceDegrees([center.lng, center.lat], coord);
 
         if (distance < roadMinDistance) {
           roadMinDistance = distance;
@@ -2883,7 +2895,7 @@ export const PresetAnimations = {
       // === EMISSION PROBABILITY ===
       // P(observation | state) - how well does GPS point fit this road?
       // Based on perpendicular distance to road (closer = higher probability)
-      // candidate.distance is an isotropic degree distance; convert to meters.
+      // candidate.distance is a cos-lat-corrected degree distance; convert to meters.
       const distanceMeters = degreesToMeters(candidate.distance);
       const maxDistanceMeters = 50; // 50m max reasonable GPS error
       const emissionProb = Math.exp(-Math.pow(distanceMeters / maxDistanceMeters, 2));
@@ -3118,10 +3130,7 @@ export const PresetAnimations = {
     let minDist = Infinity;
 
     for (let i = 0; i < roadCoords.length; i++) {
-      const [lng, lat] = roadCoords[i];
-      const dx = lng - currentPos.lng;
-      const dy = lat - currentPos.lat;
-      const dist = Math.sqrt(dx * dx + dy * dy);
+      const dist = planarDistanceDegrees(roadCoords[i], [currentPos.lng, currentPos.lat]);
 
       if (dist < minDist) {
         minDist = dist;
@@ -3259,7 +3268,7 @@ export const PresetAnimations = {
       closestIntersection = PresetAnimations._findClosestRoadByDistance(roads, center, initialBearing);
 
       if (closestIntersection) {
-        console.log(`[Setup] Fallback found road at ${(closestIntersection.distance * 111).toFixed(0)}m with angle ${closestIntersection.angleDiff?.toFixed(1)}°`);
+        console.log(`[Setup] Fallback found road at ${degreesToMeters(closestIntersection.distance).toFixed(0)}m with angle ${closestIntersection.angleDiff?.toFixed(1)}°`);
       }
     }
 
@@ -3277,13 +3286,13 @@ export const PresetAnimations = {
     // Log road selection
     if (closestIntersection.rayName) {
       // Directional ray result
-      console.log(`[RoadSelection] Found ${roadClass} via ray ${closestIntersection.rayName} | Distance: ${(closestIntersection.distance * 111).toFixed(0)}m`);
+      console.log(`[RoadSelection] Found ${roadClass} via ray ${closestIntersection.rayName} | Distance: ${degreesToMeters(closestIntersection.distance).toFixed(0)}m`);
     } else if (closestIntersection.angleDiff !== undefined) {
       // Distance-based fallback with directional scoring
-      console.log(`[RoadSelection] Found ${roadClass} (distance-based) | Distance: ${(closestIntersection.distance * 111).toFixed(0)}m | Angle diff: ${closestIntersection.angleDiff.toFixed(1)}°`);
+      console.log(`[RoadSelection] Found ${roadClass} (distance-based) | Distance: ${degreesToMeters(closestIntersection.distance).toFixed(0)}m | Angle diff: ${closestIntersection.angleDiff.toFixed(1)}°`);
     } else {
       // Basic result
-      console.log(`[RoadSelection] Found ${roadClass} | Distance: ${(closestIntersection.distance * 111).toFixed(0)}m`);
+      console.log(`[RoadSelection] Found ${roadClass} | Distance: ${degreesToMeters(closestIntersection.distance).toFixed(0)}m`);
     }
 
     // Get road coordinates (handle MultiLineString)
@@ -3371,15 +3380,9 @@ export const PresetAnimations = {
         const roadStart = roadCoordinates[0];
         const roadEnd = roadCoordinates[roadCoordinates.length - 1];
 
-        // Check if this segment starts near our current endpoint
-        const dxStart = roadStart[0] - lastPoint[0];
-        const dyStart = roadStart[1] - lastPoint[1];
-        const distanceToStart = Math.sqrt(dxStart * dxStart + dyStart * dyStart);
-
-        // Check if segment end is near our endpoint (for reversed connection)
-        const dxEnd = roadEnd[0] - lastPoint[0];
-        const dyEnd = roadEnd[1] - lastPoint[1];
-        const distanceToEnd = Math.sqrt(dxEnd * dxEnd + dyEnd * dyEnd);
+        // Distance from our current endpoint to each end of this segment (cos-lat corrected)
+        const distanceToStart = planarDistanceDegrees(lastPoint, roadStart);
+        const distanceToEnd = planarDistanceDegrees(lastPoint, roadEnd);
 
         const minDist = Math.min(distanceToStart, distanceToEnd);
 
@@ -3493,13 +3496,8 @@ export const PresetAnimations = {
             const roadStart = retryRoadCoords[0];
             const roadEnd = retryRoadCoords[retryRoadCoords.length - 1];
 
-            const dxStart = roadStart[0] - lastPoint[0];
-            const dyStart = roadStart[1] - lastPoint[1];
-            const distanceToStart = Math.sqrt(dxStart * dxStart + dyStart * dyStart);
-
-            const dxEnd = roadEnd[0] - lastPoint[0];
-            const dyEnd = roadEnd[1] - lastPoint[1];
-            const distanceToEnd = Math.sqrt(dxEnd * dxEnd + dyEnd * dyEnd);
+            const distanceToStart = planarDistanceDegrees(lastPoint, roadStart);
+            const distanceToEnd = planarDistanceDegrees(lastPoint, roadEnd);
 
             const minDist = Math.min(distanceToStart, distanceToEnd);
 
