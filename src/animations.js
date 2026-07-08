@@ -737,7 +737,7 @@ const rotatePanorama360 = async (map, duration, { checkAbort, degreesPerStep = 2
     }
 
     // Build easeTo options
-    let easToOptions = {
+    let easeToOptions = {
       bearing: currentBearing,
       duration: msPerStep,
       essential: true,
@@ -746,7 +746,7 @@ const rotatePanorama360 = async (map, duration, { checkAbort, degreesPerStep = 2
 
     // Add pitch if defined
     if (currentPitch !== undefined) {
-      easToOptions.pitch = currentPitch;
+      easeToOptions.pitch = currentPitch;
     }
 
     // Call custom onStep callback if provided
@@ -754,14 +754,14 @@ const rotatePanorama360 = async (map, duration, { checkAbort, degreesPerStep = 2
       const stepResult = onStep(currentBearing, progress);
       // If onStep returns an object, merge it with easeTo options
       if (stepResult && typeof stepResult === 'object') {
-        easToOptions = { ...easToOptions, ...stepResult };
+        easeToOptions = { ...easeToOptions, ...stepResult };
       }
     }
 
     // Apply terrain-aware zoom adjustment if terrain is enabled and pitch is set
     if (map.getTerrain && map.getTerrain()) {
-      // Use easToOptions.pitch if set, otherwise use current map pitch
-      const pitchToCheck = easToOptions.pitch !== undefined ? easToOptions.pitch : map.getPitch();
+      // Use easeToOptions.pitch if set, otherwise use current map pitch
+      const pitchToCheck = easeToOptions.pitch !== undefined ? easeToOptions.pitch : map.getPitch();
 
       if (pitchToCheck > 0) {
         const terrainAwareZoom = calculateTerrainAwareZoom(map, pitchToCheck);
@@ -769,16 +769,16 @@ const rotatePanorama360 = async (map, duration, { checkAbort, degreesPerStep = 2
         // zoom if present, otherwise the current map zoom (easeTo leaves it unchanged).
         // Checking map.getZoom() would let an onStep-driven zoom-out slip through one
         // unsafe step and then oscillate.
-        const requestedZoom = easToOptions.zoom !== undefined ? easToOptions.zoom : map.getZoom();
+        const requestedZoom = easeToOptions.zoom !== undefined ? easeToOptions.zoom : map.getZoom();
 
         // Only adjust if we need more zoom for safety
         if (requestedZoom < terrainAwareZoom) {
-          easToOptions.zoom = terrainAwareZoom;
+          easeToOptions.zoom = terrainAwareZoom;
         }
       }
     }
 
-    map.easeTo(easToOptions);
+    map.easeTo(easeToOptions);
     await map.once('moveend');
   }
 
