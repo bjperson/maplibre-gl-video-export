@@ -724,7 +724,14 @@ class VideoExportControl {
      */
   _loadSettings() {
     const saved = localStorage.getItem('maplibre-video-export-settings');
-    return saved ? JSON.parse(saved) : VideoExportControl.DEFAULT_SETTINGS;
+    if (!saved) return { ...VideoExportControl.DEFAULT_SETTINGS };
+    try {
+      // Merge onto defaults so keys added in newer versions aren't missing.
+      return { ...VideoExportControl.DEFAULT_SETTINGS, ...JSON.parse(saved) };
+    } catch (e) {
+      console.warn('[Settings] Ignoring corrupt saved settings:', e);
+      return { ...VideoExportControl.DEFAULT_SETTINGS };
+    }
   }
 
   /**
@@ -852,7 +859,13 @@ class VideoExportControl {
       'points-of-interest': true, // Collapsed by default
       'geographic-constraints': true // Collapsed by default
     };
-    return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
+    if (!saved) return defaults;
+    try {
+      return { ...defaults, ...JSON.parse(saved) };
+    } catch (e) {
+      console.warn('[Sections] Ignoring corrupt saved section states:', e);
+      return defaults;
+    }
   }
 
   /**
