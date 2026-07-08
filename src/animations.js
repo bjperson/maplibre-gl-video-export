@@ -13,6 +13,41 @@ import { calculateBearing, calculateDistance, resamplePath, resamplePathCatmullR
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+/**
+ * Frozen-time-aware pause used by presets during recording.
+ *
+ * While exporting, maplibregl freezes the clock (setNow) and the capture loop
+ * advances virtual time one captured frame at a time. A wall-clock `sleep` would
+ * emit a machine-speed-dependent number of static frames, so waypoint pauses and
+ * settle delays render for a different length on every machine. This instead waits
+ * until virtual time (maplibregl.now()) has advanced by `ms`, giving a deterministic
+ * frame count (ms * fps / 1000) regardless of CPU speed.
+ *
+ * When the clock is NOT frozen (live preview, tests) it falls back to a real
+ * wall-clock sleep, so behaviour outside recording is identical to before.
+ * @param {number} ms - Virtual milliseconds to wait
+ * @returns {Promise<void>}
+ */
+const virtualSleep = (ms) => {
+  const timeFrozen = typeof maplibregl !== 'undefined' &&
+    typeof maplibregl.isTimeFrozen === 'function' && maplibregl.isTimeFrozen();
+  if (!timeFrozen) {
+    return sleep(ms);
+  }
+  return new Promise((resolve) => {
+    const start = maplibregl.now();
+    const tick = () => {
+      // now() advances as the capture loop calls setNow() for each captured frame.
+      if (maplibregl.now() - start >= ms) {
+        resolve();
+      } else {
+        requestAnimationFrame(tick);
+      }
+    };
+    requestAnimationFrame(tick);
+  });
+};
+
 // ============================================================================
 // Road Following Utilities & Constants
 // ============================================================================
@@ -583,7 +618,7 @@ async function flyToWaypoint(map, waypoint, transitionDuration, { checkAbort, up
     if (updateStatus) {
       updateStatus(`At ${wpName} (pausing ${waypoint.duration}ms)...`);
     }
-    await sleep(waypoint.duration);
+    await virtualSleep(waypoint.duration);
     if (checkAbort) checkAbort();
   }
 }
@@ -1292,7 +1327,7 @@ export class AnimationDirector {
             source: terrainSource,
             exaggeration: 1.5
           });
-          await sleep(500);
+          await virtualSleep(500);
           checkAbort();
         }
       }
@@ -1351,7 +1386,7 @@ export class AnimationDirector {
 
       const bounds = this.map.getBounds();
       if (!bounds) {
-        await sleep(duration);
+        await virtualSleep(duration);
         return;
       }
 
@@ -1819,7 +1854,7 @@ export const PresetAnimations = {
           center: optimalView.center,
           zoom: optimalView.zoom
         });
-        await sleep(500); // Brief pause for map to settle
+        await virtualSleep(500); // Brief pause for map to settle
       }
     }
 
@@ -1845,7 +1880,7 @@ export const PresetAnimations = {
           center: optimalView.center,
           zoom: optimalView.zoom
         });
-        await sleep(500);
+        await virtualSleep(500);
       }
     }
 
@@ -1885,7 +1920,7 @@ export const PresetAnimations = {
           center: optimalView.center,
           zoom: optimalView.zoom
         });
-        await sleep(500);
+        await virtualSleep(500);
       }
     }
 
@@ -2156,7 +2191,7 @@ export const PresetAnimations = {
       });
       await map.once('moveend');
       checkAbort();
-      await sleep(stepDuration * 0.2); // Brief pause
+      await virtualSleep(stepDuration * 0.2); // Brief pause
       checkAbort();
     }
 
@@ -2400,7 +2435,7 @@ export const PresetAnimations = {
       checkAbort();
 
       // Brief pause at extreme
-      await sleep(200);
+      await virtualSleep(200);
 
       // Swing left
       map.easeTo({
@@ -2414,7 +2449,7 @@ export const PresetAnimations = {
       checkAbort();
 
       // Brief pause at extreme
-      await sleep(200);
+      await virtualSleep(200);
     }
 
     // Return to center
@@ -2545,7 +2580,7 @@ export const PresetAnimations = {
 
     if (waypointArray.length === 0) {
       updateStatus('⚠️ No waypoints defined for tour');
-      await sleep(2000);
+      await virtualSleep(2000);
       return;
     }
 
@@ -4291,9 +4326,12 @@ export const PresetAnimations = {
         }
       }
 
-      // Add natural bearing variations (gentle sine wave + noise)
+      // Add natural bearing variations. Both terms are deterministic functions of
+      // virtual time (t), so the flight path is identical on every export. The second
+      // term is a product of incommensurate sines standing in for the old
+      // Math.random() jitter, keeping the same +/-0.025 amplitude.
       const t = elapsed / 1000;
-      bearingDrift += (Math.sin(t * 0.1) * 0.02) + (Math.random() - 0.5) * 0.05;
+      bearingDrift += (Math.sin(t * 0.1) * 0.02) + (Math.sin(t * 2.3) * Math.sin(t * 0.91) * 0.025);
       bearingDrift = Math.max(-5, Math.min(5, bearingDrift)); // ±5° max drift
 
       currentBearing = initialBearing + bearingDrift;
@@ -4311,7 +4349,7 @@ export const PresetAnimations = {
         essential: true
       });
 
-      await sleep(stepInterval);
+      await virtualSleep(stepInterval);
     }
 
     updateStatus('✈️ Free flight complete');
