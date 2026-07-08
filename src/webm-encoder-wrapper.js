@@ -250,12 +250,14 @@ export class WebmEncoderWrapper {
 
     // Wait for worker to send the final null signal
     return new Promise((resolve, reject) => {
-      // Set timeout - give more time for large videos
+      // Scale the ceiling with frame count so a long encode isn't discarded mid-flight;
+      // a genuinely stalled worker still fails once it is hit.
+      const endTimeoutMs = Math.max(60000, this.frameCount * 200);
       const timeout = setTimeout(() => {
         console.error('[WebM Encoder] Timeout waiting for end signal from worker');
         console.error(`[WebM Encoder] Chunks collected: ${this.videoChunks.length}`);
         reject(new Error('WebM encoding failed - timeout waiting for end signal'));
-      }, 30000); // 30 seconds timeout for large videos
+      }, endTimeoutMs);
 
       // Set the resolver that will be called when null is received
       this.resolveEnd = (videoData) => {
