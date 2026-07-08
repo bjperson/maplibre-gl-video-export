@@ -6832,32 +6832,47 @@ class VideoExportControl {
       // Freeze time AFTER setup
       maplibregl.setNow(virtualTime);
 
-      // Helper to wait for tiles to load
-      // With frozen time (setNow), events don't fire normally, so we use a simple approach:
-      // Force multiple repaints and check tiles status
-      const waitForTilesLoaded = async () => {
-        // Quick check first
-        if (this._map.areTilesLoaded()) {
-          return;
-        }
-
-        // Force multiple render cycles to give tiles time to load
-        // With frozen time, we need to manually trigger repaints
-        const maxAttempts = 5;
-        for (let i = 0; i < maxAttempts; i++) {
-          this._map.triggerRepaint();
-
-          // Wait a tiny bit for the browser to process
-          await new Promise(resolve => setTimeout(resolve, 20));
-
-          // Check if tiles loaded
-          if (this._map.areTilesLoaded()) {
-            return;
+      // Wait for a single rendered frame before capturing. With frozen time (setNow)
+      // nothing repaints on its own, so we trigger a repaint and resolve on the first
+      // 'render'. When waitForTiles is on we keep repainting until this frame's tiles
+      // are loaded, bounded by a wall-clock watchdog that captures anyway but LOGS it
+      // (the old polling gave up silently, hiding incomplete-tile frames). Merging the
+      // tile wait and the render wait into one listener also removes the previous
+      // once('render') deadlock window, where a render could fire during the tile poll
+      // and leave the following once('render') waiting for a repaint that never came.
+      // Waiting costs nothing on the virtual timeline — time is frozen for this frame.
+      const TILE_WAIT_WATCHDOG_MS = 1500;
+      const waitForCaptureFrame = () => /** @type {Promise<void>} */ (new Promise((resolve) => {
+        let settled = false;
+        let watchdog = null;
+        const finish = (incompleteTiles) => {
+          if (settled) return;
+          settled = true;
+          if (watchdog) clearTimeout(watchdog);
+          if (incompleteTiles) {
+            console.warn('[Recording] ⚠️ Frame captured with incomplete tiles (watchdog)');
           }
+          resolve();
+        };
+        const onRender = () => {
+          if (settled) return;
+          if (!this.options.waitForTiles || this._map.areTilesLoaded()) {
+            this._map.off('render', onRender);
+            finish(false);
+          } else {
+            // Tiles still loading — repaint and re-check on the next render.
+            this._map.triggerRepaint();
+          }
+        };
+        this._map.on('render', onRender);
+        if (this.options.waitForTiles) {
+          watchdog = setTimeout(() => {
+            this._map.off('render', onRender);
+            finish(true);
+          }, TILE_WAIT_WATCHDOG_MS);
         }
-
-        // Continue anyway after max attempts
-      };
+        this._map.triggerRepaint(); // guarantee a first render
+      }));
 
       // Calculate recording duration (needed for metrics later)
       let recordingDuration = this.options.duration / this.options.speedMultiplier;
@@ -6910,15 +6925,11 @@ class VideoExportControl {
             // Advance time
             virtualTime += timeAdvance;
             maplibregl.setNow(virtualTime);
-            this._map.triggerRepaint();
 
-            // Wait for tiles if option enabled
-            if (this.options.waitForTiles) {
-              await waitForTilesLoaded();
-            }
-
-            // Wait for render
-            await new Promise(resolve => this._map.once('render', resolve));
+            // Wait for a render (and, when enabled, for this frame's tiles) before
+            // reading pixels. readPixels stays right after this await so it runs in the
+            // same tick as the render, before the browser composites the buffer.
+            await waitForCaptureFrame();
 
             // Capture frame
             if (this.options.format === 'mp4') {
