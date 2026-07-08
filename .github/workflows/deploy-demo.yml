@@ -1,0 +1,45 @@
+name: Deploy demo
+
+# Rebuild demo/ and publish it to GitHub Pages on every push to master, so the live
+# demo always tracks the latest code (no manual build/publish, plugin served same-origin
+# so the WebM worker works).
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; a newer push cancels an in-flight run.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      # demo/assets/js/* are symlinks into dist/; -L copies the freshly built targets.
+      - name: Assemble site
+        run: |
+          mkdir -p _site
+          cp -rL demo/. _site/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deploy
+        uses: actions/deploy-pages@v4
