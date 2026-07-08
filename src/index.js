@@ -7092,9 +7092,11 @@ class VideoExportControl {
   }
 }
 
-// Version number (automatically injected from package.json during build)
+// Version number. The npm entry point is the rollup build, where __VERSION__ is
+// replaced with the package version. The guard keeps the raw source importable on
+// its own too (e.g. tooling that loads src directly), where __VERSION__ is undefined.
 // @ts-ignore - __VERSION__ is replaced at build time
-VideoExportControl.version = __VERSION__;
+VideoExportControl.version = typeof __VERSION__ !== 'undefined' ? __VERSION__ : null;
 
 // Auto-register with MapLibre if available
 if (typeof window !== 'undefined' && window.maplibregl) {

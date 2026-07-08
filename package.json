@@ -3,16 +3,18 @@
   "version": "0.1.1",
   "description": "Video export plugin for MapLibre GL JS",
   "type": "module",
-  "main": "src/index.js",
+  "main": "dist/maplibre-gl-video-export/maplibre-gl-video-export.esm.js",
+  "module": "dist/maplibre-gl-video-export/maplibre-gl-video-export.esm.js",
   "exports": {
-    ".": "./src/index.js",
+    ".": "./dist/maplibre-gl-video-export/maplibre-gl-video-export.esm.js",
     "./animations": "./src/animations.js",
     "./controller": "./src/controller.js",
     "./utils": "./src/utils.js"
   },
   "scripts": {
     "build": "rollup -c && node scripts/prepare-dist.js",
-    "prepublishOnly": "npm run build",
+    "test": "node scripts/smoke-test.js",
+    "prepublishOnly": "npm run build && npm test",
     "download-encoder": "bash scripts/download-encoder.sh",
     "setup-demo": "bash scripts/setup-demo.sh",
     "demo": "python3 -m http.server 8080 --directory demo",
@@ -29,6 +31,8 @@
   },
   "files": [
     "src/",
+    "dist/maplibre-gl-video-export/maplibre-gl-video-export.esm.js",
+    "dist/maplibre-gl-video-export/maplibre-gl-video-export.esm.js.map",
     "dist/maplibre-gl-video-export/maplibre-gl-video-export.js",
     "dist/maplibre-gl-video-export/maplibre-gl-video-export.min.js",
     "dist/maplibre-gl-video-export/maplibre-gl-video-export.js.map",

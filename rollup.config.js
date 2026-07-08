@@ -39,6 +39,14 @@ export default {
     },
     output: [
         {
+            // ESM build - the npm entry point (package.json main/module/exports).
+            // __VERSION__ is substituted here, so consumers get the real version.
+            file: 'dist/maplibre-gl-video-export/maplibre-gl-video-export.esm.js',
+            format: 'es',
+            sourcemap: true,
+            inlineDynamicImports: true
+        },
+        {
             file: 'dist/maplibre-gl-video-export/maplibre-gl-video-export.js',
             format: 'iife',
             name: 'VideoExportControl',

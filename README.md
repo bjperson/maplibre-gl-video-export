@@ -67,7 +67,7 @@ npm install maplibre-gl-video-export
 ```
 
 ```javascript
-import { VideoExportControl } from 'maplibre-gl-video-export';
+import VideoExportControl from 'maplibre-gl-video-export';
 ```
 
 ## Quick Start
