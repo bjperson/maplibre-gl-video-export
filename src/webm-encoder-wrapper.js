@@ -182,11 +182,16 @@ export class WebmEncoderWrapper {
       };
     });
 
-    // Send encoder configuration (webm-wasm expects exactly: width, height, bitrate, realtime)
+    // Send encoder configuration. The vendored worker builds the encoder from
+    // { width, height, timebaseNum, timebaseDen, bitrate, realtime }; without an explicit
+    // timebase it defaults to 30 fps, so a 60 fps capture would play back at half speed.
+    // Frame duration is timebaseNum/timebaseDen seconds, i.e. 1/fps.
     console.log('[WebM Encoder] Configuring encoder');
     const config = {
       width,
       height,
+      timebaseNum: 1,
+      timebaseDen: Math.round(fps), // one frame lasts 1/fps s
       bitrate, // bitrate in kbps
       realtime // Realtime mode: false = high quality (slower), true = fast encoding
     };

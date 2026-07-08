@@ -531,6 +531,8 @@ class VideoExportControl {
     this._isRecording = false; // Flag to prevent marker recreation during recording
     /** @type {any} */
     this._savedFades = null; // Fade durations saved during export, restored afterwards
+    /** @type {number|null} */
+    this._savedPixelRatio = null; // Map pixel ratio saved during export, restored afterwards
     this._savedWaypointsVisibility = undefined; // Saved state during recording
     this._waypointsLayerId = 've-waypoints-recording-layer'; // MapLibre layer ID for waypoints
     this._waypointsSourceId = 've-waypoints-recording-source'; // MapLibre source ID for waypoints
@@ -6687,6 +6689,24 @@ class VideoExportControl {
       bearing: this._map.getBearing()
     };
 
+    // Pin the map to 1:1 device pixels for the export. MapLibre sizes the GL drawing
+    // buffer at cssSize × pixelRatio (pixelRatio defaults to devicePixelRatio), but the
+    // capture below reads exactly width×height with gl.readPixels. On a HiDPI display the
+    // buffer would be larger than width×height and the readback would grab only its
+    // bottom-left corner. Forcing pixelRatio 1 makes the buffer match the requested
+    // resolution (and keeps a "4K" preset a true 4K instead of buffering at 8K). Restored
+    // in the finally block below.
+    this._savedPixelRatio = null;
+    if (typeof this._map.getPixelRatio === 'function' && typeof this._map.setPixelRatio === 'function') {
+      try {
+        this._savedPixelRatio = this._map.getPixelRatio();
+        this._map.setPixelRatio(1);
+      } catch (pixelRatioError) {
+        console.warn('[Recording] Could not force pixelRatio to 1:', pixelRatioError);
+        this._savedPixelRatio = null;
+      }
+    }
+
     // Resize if needed
     if (this.options.resolution !== 'auto') {
       container.style.width = width + 'px';
@@ -7048,6 +7068,16 @@ class VideoExportControl {
 
       // Restore tile/label fade durations changed for the export
       this._restoreMapFades();
+
+      // Restore the map's pixel ratio (pinned to 1 during capture for HiDPI correctness)
+      if (this._savedPixelRatio !== null && typeof this._map.setPixelRatio === 'function') {
+        try {
+          this._map.setPixelRatio(this._savedPixelRatio);
+        } catch (pixelRatioError) {
+          console.warn('[Recording] Could not restore pixelRatio:', pixelRatioError);
+        }
+        this._savedPixelRatio = null;
+      }
 
       // Remove temporary WebGL layer (no longer needed)
       this._removeWaypointsWebGLLayer();

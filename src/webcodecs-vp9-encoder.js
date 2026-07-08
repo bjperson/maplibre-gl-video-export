@@ -121,13 +121,18 @@ export class WebCodecsVP9Encoder {
       console.log('[WebCodecs VP9] Quality: HIGH');
     }
 
-    // Build CanvasSource config with all options
+    // Build CanvasSource config with all options.
+    // - keyFrameInterval is a frame count here (UI contract) but Mediabunny expects it in
+    //   SECONDS, so convert with the fps (e.g. 120 frames @ 60 fps -> 2 s, not 120 s).
+    // - Honor the caller's bitrate (kbps -> bits/s) when provided; fall back to the quality
+    //   constant only when no explicit bitrate is available.
+    const keyFrameIntervalSeconds = fps > 0 ? keyFrameInterval / fps : keyFrameInterval;
     const canvasConfig = {
       codec: 'vp9',
-      bitrate: qualityConstant,
+      bitrate: (typeof bitrate === 'number' && bitrate > 0) ? bitrate * 1000 : qualityConstant,
       latencyMode,
       bitrateMode,
-      keyFrameInterval
+      keyFrameInterval: keyFrameIntervalSeconds
     };
 
     // Add content hint if specified
