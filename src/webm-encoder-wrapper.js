@@ -220,16 +220,11 @@ export class WebmEncoderWrapper {
       console.log(`[WebM Encoder] First frame - buffer size: ${rgbaBuffer.byteLength} bytes`);
     }
 
-    // IMPORTANT: webm-wasm expects ArrayBuffer, not Uint8Array
-    // AND it needs to be transferred properly
-    // Create a new ArrayBuffer and copy the data
+    // Copy the frame into a fresh ArrayBuffer and transfer it to the worker (zero-copy
+    // handoff) instead of letting postMessage structured-clone it — one copy less/frame.
     const buffer = new ArrayBuffer(rgbaBuffer.byteLength);
-    const view = new Uint8Array(buffer);
-    view.set(rgbaBuffer);
-
-    // Send the ArrayBuffer WITHOUT transfer (copy instead)
-    // This avoids potential issues with worker message queue blocking
-    this.worker.postMessage(buffer);
+    new Uint8Array(buffer).set(rgbaBuffer);
+    this.worker.postMessage(buffer, [buffer]);
   }
 
   /**
