@@ -6121,6 +6121,10 @@ class VideoExportControl {
       // Read fresh options from UI inputs
       this._readOptionsFromUI();
 
+      // Reset abort state before setup: run() resets it too late (after setup), so a
+      // cancel from a previous export would otherwise abort this setup immediately.
+      this._animationController.beginCycle();
+
       // Get animation with optional setup phase
       const { setup, animation } = await this._getAnimation();
 
@@ -6280,6 +6284,9 @@ class VideoExportControl {
 
       // Read fresh options from UI inputs
       this._readOptionsFromUI();
+
+      // Reset abort state before setup (run() resets it too late — after setup).
+      this._animationController.beginCycle();
 
       // Get animation with setup phase
       const { setup, animation } = await this._getAnimation();
@@ -6845,6 +6852,9 @@ class VideoExportControl {
 
       console.log(`Time advance: ${timeAdvance.toFixed(2)}ms per frame (${this.options.speedMultiplier}x speed at ${this.options.fps} fps)`);
       console.log(`⏳ Wait for tiles: ${this.options.waitForTiles ? 'enabled (slower, better quality)' : 'disabled (faster)'}`);
+
+      // Reset abort state before setup (run() resets it too late — after setup).
+      this._animationController.beginCycle();
 
       // Get animation with optional setup phase
       const { setup, animation } = await this._getAnimation();

@@ -62,6 +62,16 @@ export class AnimationController {
   }
 
   /**
+     * Arm a fresh animation cycle. Must be called before the setup phase, which runs
+     * before run() and checks `aborted` to catch a cancel during setup. run()'s own
+     * reset of `_aborted` happens after setup, so without this a cancel from a previous
+     * cycle would leak into this cycle's setup and abort it immediately.
+     */
+  beginCycle() {
+    this._aborted = false;
+  }
+
+  /**
      * Cancel the current animation and restore initial position
      */
   cancel(map) {
