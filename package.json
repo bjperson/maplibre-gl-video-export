@@ -1,6 +1,6 @@
 {
   "name": "maplibre-gl-video-export",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Video export plugin for MapLibre GL JS",
   "type": "module",
   "main": "dist/maplibre-gl-video-export/maplibre-gl-video-export.esm.js",
@@ -76,7 +76,7 @@
     ]
   },
   "peerDependencies": {
-    "maplibre-gl": ">=5.11.0"
+    "maplibre-gl": ">=5.11.0 <6"
   },
   "repository": {
     "type": "git",
