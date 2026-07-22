@@ -42,7 +42,8 @@
     "dist/maplibre-gl-video-export/vendor/webm/",
     "vendor/webm/",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "keywords": [
     "maplibre",
